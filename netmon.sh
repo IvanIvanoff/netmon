@@ -13,7 +13,7 @@ set -euo pipefail
 
 LOG_DIR="$HOME/call-network-logs"
 PID_FILE="$LOG_DIR/.monitor.pid"
-INTERVAL="${MONITOR_INTERVAL:-5}" # seconds between samples
+INTERVAL="${MONITOR_INTERVAL:-2}" # seconds between samples
 
 PING_TARGET="${PING_TARGET:-8.8.8.8}"
 PING_COUNT=3
@@ -44,7 +44,17 @@ _compile_wifi_helper
 
 # ── helpers ──────────────────────────────────────────────────────────
 
+REPORT_WIDTH=140
+
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+
+_section() {
+  local label="── $1 "
+  local pad=$((REPORT_WIDTH - ${#label}))
+  printf "%s" "$label"
+  printf '─%.0s' $(seq 1 "$pad")
+  echo
+}
 
 get_wifi_info() {
   # Try 1: airport utility (pre-Sonoma macOS)
@@ -78,7 +88,7 @@ parse_ping() {
   local stats_line
   stats_line=$(echo "$output" | grep "round-trip\|rtt" || echo "")
   if [[ -n "$stats_line" ]]; then
-    read -r min avg max <<< "$(echo "$stats_line" | awk -F'[/ =]+' '{
+    read -r min avg max <<<"$(echo "$stats_line" | awk -F'[/ =]+' '{
       for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) { n++; v[n]=$i }
       print v[1], v[2], v[3]
     }')"
@@ -109,16 +119,68 @@ get_public_ip() {
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "?"
 }
 
+_nettop_snapshot() {
+  # Raw nettop snapshot: process.pid,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx
+  nettop -P -L 1 -n -x -J time,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx 2>/dev/null |
+    awk -F, 'NR > 1 && ($3+0 > 0 || $4+0 > 0) { print $2","$3","$4","$5","$6","$7 }'
+}
+
+capture_traffic() {
+  # Compute per-interval deltas against previous snapshot, append to traffic CSV
+  local ts="$1" traffic_file="$2" prev_file="$3" curr_file="$4"
+
+  _nettop_snapshot >"$curr_file"
+
+  if [[ -s "$prev_file" ]]; then
+    # Resolve truncated nettop names → full names via ps
+    local name_file="${curr_file}.names"
+    local pids
+    pids=$(awk -F, '{ n=split($1,p,"."); if(p[n]~/^[0-9]+$/) print p[n] }' "$curr_file" | sort -u | paste -sd, -)
+    if [[ -n "$pids" ]]; then
+      ps -p "$pids" -o pid=,comm= 2>/dev/null | \
+        awk '{ pid=$1; $1=""; sub(/^ +/,""); n=split($0,a,"/"); print pid","a[n] }' >"$name_file"
+    else
+      : >"$name_file"
+    fi
+
+    awk -F, -v ts="$ts" '
+      FILENAME == ARGV[1] { fullname[$1] = $2; next }
+      FILENAME == ARGV[2] { prev_in[$1]=$2; prev_out[$1]=$3; prev_dup[$1]=$4; prev_ooo[$1]=$5; prev_retx[$1]=$6; next }
+      {
+        din  = $2 - (prev_in[$1]+0);  if (din < 0) din = 0
+        dout = $3 - (prev_out[$1]+0); if (dout < 0) dout = 0
+        ddup = $4 - (prev_dup[$1]+0); if (ddup < 0) ddup = 0
+        dooo = $5 - (prev_ooo[$1]+0); if (dooo < 0) dooo = 0
+        dretx= $6 - (prev_retx[$1]+0); if (dretx < 0) dretx = 0
+        if (din > 0 || dout > 0) {
+          proc = $1; pid = ""
+          n = split(proc, p, ".")
+          if (n > 1 && p[n] ~ /^[0-9]+$/) {
+            pid = p[n]; proc = p[1]
+            for (i = 2; i < n; i++) proc = proc "." p[i]
+          }
+          if (pid != "" && pid in fullname) proc = fullname[pid]
+          printf "%s,%s,%s,%d,%d,%d,%d,%d\n", ts, proc, pid, din, dout, ddup, dooo, dretx
+        }
+      }
+    ' "$name_file" "$prev_file" "$curr_file" >>"$traffic_file"
+    rm -f "$name_file"
+  fi
+
+  cp "$curr_file" "$prev_file"
+}
+
 # ── sampling loop ────────────────────────────────────────────────────
 
 sample_loop() {
-  local logfile="$1"
+  local logfile="$1" traffic_file="$2"
   # Disable errexit/nounset/pipefail — the background loop must not die
   # on transient failures (e.g. grep no-match, network timeout)
   set +e +u +o pipefail
 
-  # Write CSV header
+  # Write CSV headers
   echo "timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms" >"$logfile"
+  echo "sample_ts,process,pid,bytes_in,bytes_out,rx_dupe,rx_ooo,retransmits" >"$traffic_file"
 
   # Grab public IP once at start (doesn't change mid-call usually)
   local pub_ip
@@ -126,7 +188,12 @@ sample_loop() {
 
   local ping_file="/tmp/netmon_ping.$$"
   local dns_file="/tmp/netmon_dns.$$"
-  trap 'rm -f "$ping_file" "$dns_file"' EXIT
+  local prev_traffic="/tmp/netmon_tprev.$$"
+  local curr_traffic="/tmp/netmon_tcurr.$$"
+  trap 'rm -f "$ping_file" "$dns_file" "$prev_traffic" "$curr_traffic"' EXIT
+
+  # Baseline traffic snapshot (not logged — just sets the zero point)
+  _nettop_snapshot >"$prev_traffic"
 
   while true; do
     local ts wifi_info ssid channel rssi noise snr tx_rate iface lip
@@ -154,9 +221,10 @@ sample_loop() {
       snr="?"
     fi
 
-    # Ping + DNS in parallel
-    run_ping > "$ping_file" &
-    get_dns_latency > "$dns_file" &
+    # Ping + DNS + traffic snapshot in parallel
+    run_ping >"$ping_file" &
+    get_dns_latency >"$dns_file" &
+    capture_traffic "$ts" "$traffic_file" "$prev_traffic" "$curr_traffic" &
     wait
 
     local ping_parsed loss pmin pavg pmax dns_ms
@@ -180,13 +248,17 @@ cmd_start() {
     return 0
   fi
 
-  local logfile="$LOG_DIR/call-$(date +%Y%m%d-%H%M%S).csv"
+  local stamp
+  stamp=$(date +%Y%m%d-%H%M%S)
+  local logfile="$LOG_DIR/call-${stamp}.csv"
+  local traffic_file="$LOG_DIR/call-${stamp}-traffic.csv"
   echo "Starting network monitor..."
   echo "  Log file : $logfile"
+  echo "  Traffic  : $traffic_file"
   echo "  Interval : ${INTERVAL}s"
   echo "  Ping host: $PING_TARGET"
 
-  sample_loop "$logfile" &
+  sample_loop "$logfile" "$traffic_file" &
   local pid=$!
   echo "$pid" >"$PID_FILE"
   echo "  PID      : $pid"
@@ -211,11 +283,13 @@ cmd_stop() {
   rm -f "$PID_FILE"
 
   local latest
-  latest=$(ls -t "$LOG_DIR"/call-*.csv 2>/dev/null | head -1)
+  latest=$(ls -t "$LOG_DIR"/call-*.csv 2>/dev/null | grep -v traffic | head -1)
   if [[ -n "$latest" ]]; then
     local samples
     samples=$(($(wc -l <"$latest") - 1))
     echo "Logged $samples samples to: $latest"
+    local traffic="${latest%.csv}-traffic.csv"
+    [[ -f "$traffic" ]] && echo "Traffic log: $traffic"
   fi
 }
 
@@ -223,7 +297,7 @@ cmd_review() {
   local target="${1:-}"
 
   if [[ -z "$target" ]]; then
-    target=$(ls -t "$LOG_DIR"/call-*.csv 2>/dev/null | head -1)
+    target=$(ls -t "$LOG_DIR"/call-*.csv 2>/dev/null | grep -v traffic | head -1)
   fi
 
   if [[ -z "$target" || ! -f "$target" ]]; then
@@ -237,16 +311,16 @@ cmd_review() {
   first=$(sed -n '2p' "$target" | cut -d, -f1)
   last=$(tail -1 "$target" | cut -d, -f1)
 
-  echo "═══════════════════════════════════════════════════════"
+  printf '═%.0s' $(seq 1 "$REPORT_WIDTH"); echo
   echo " Call Network Report"
-  echo "═══════════════════════════════════════════════════════"
+  printf '═%.0s' $(seq 1 "$REPORT_WIDTH"); echo
   echo " File     : $target"
   echo " Samples  : $samples"
   echo " Period   : $first  →  $last"
   echo ""
 
   # --- Ping stats ---
-  echo "── Ping ($PING_TARGET) ──────────────────────────────"
+  _section "Ping ($PING_TARGET)"
   awk -F, 'NR>1 && $14 ~ /^[0-9.]/ {
         sum+=$14; n++
         if(n==1 || $14+0 < mn) mn=$14+0
@@ -266,7 +340,7 @@ cmd_review() {
   echo ""
 
   # --- Wi-Fi signal ---
-  echo "── Wi-Fi Signal ───────────────────────────────────────"
+  _section "Wi-Fi Signal"
   awk -F, 'NR>1 && $4 ~ /^-?[0-9]/ {
         sum+=$4; n++
         if(n==1 || $4+0 < mn) mn=$4+0
@@ -307,7 +381,7 @@ cmd_review() {
   echo ""
 
   # --- DNS ---
-  echo "── DNS Latency ────────────────────────────────────────"
+  _section "DNS Latency"
   awk -F, 'NR>1 && $16 ~ /^[0-9]/ {
         sum+=$16; n++
         if(n==1 || $16+0 > mx) mx=$16+0
@@ -317,8 +391,57 @@ cmd_review() {
     }' "$target"
   echo ""
 
+  # --- Traffic ---
+  local traffic_file="${target%.csv}-traffic.csv"
+  if [[ -f "$traffic_file" ]]; then
+    _section "Per-Process Traffic"
+    # Sum per-interval deltas per process, show top 10 by total bytes
+    awk -F, '
+      NR == 1 { next }
+      { in_sum[$2] += $4; out_sum[$2] += $5; retx_sum[$2] += $8 }
+      END {
+        for (proc in in_sum) {
+          total = in_sum[proc] + out_sum[proc]
+          if (total > 0)
+            printf "%d|%s|%d|%d|%d\n", total, proc, in_sum[proc], out_sum[proc], retx_sum[proc]
+        }
+      }
+    ' "$traffic_file" | sort -t'|' -k1 -nr | head -10 |
+      awk -F'|' '
+      function human(b) {
+        if (b >= 1073741824) return sprintf("%.1f GB", b/1073741824)
+        if (b >= 1048576) return sprintf("%.1f MB", b/1048576)
+        if (b >= 1024) return sprintf("%.1f KB", b/1024)
+        return b " B"
+      }
+      NR == 1 { printf "  %-105s %10s %10s %8s\n", "Process", "Recv", "Sent", "Re-TX" }
+      {
+        name = $2; if (length(name) > 105) name = substr(name, 1, 102) "..."
+        printf "  %-105s %10s %10s", name, human($3), human($4)
+        if ($5 > 0) printf " %8d", $5; else printf " %8s", "-"
+        printf "\n"
+      }
+    '
+
+    # Total traffic
+    awk -F, '
+      function human(b) {
+        if (b >= 1073741824) return sprintf("%.1f GB", b/1073741824)
+        if (b >= 1048576) return sprintf("%.1f MB", b/1048576)
+        if (b >= 1024) return sprintf("%.1f KB", b/1024)
+        return b " B"
+      }
+      NR == 1 { next }
+      { tin += $4; tout += $5 }
+      END {
+        printf "\n  Total recv: %s  |  Total sent: %s\n", human(tin), human(tout)
+      }
+    ' "$traffic_file"
+    echo ""
+  fi
+
   # --- Problem detection ---
-  echo "── Issues Detected ────────────────────────────────────"
+  _section "Issues Detected"
   local issues=0
 
   # High latency spikes
@@ -363,19 +486,39 @@ cmd_review() {
     issues=$((issues + 1))
   fi
 
+  # High retransmits (from traffic log)
+  if [[ -f "$traffic_file" ]]; then
+    local high_retx
+    high_retx=$(awk -F, '
+      NR == 1 { next }
+      { retx[$2] += $8 }
+      END {
+        for (proc in retx)
+          if (retx[proc] > 50) printf "       %s: %d retransmits\n", proc, retx[proc]
+      }
+    ' "$traffic_file")
+    if [[ -n "$high_retx" ]]; then
+      echo "  ⚠  High TCP retransmits (>50):"
+      echo "$high_retx" | head -5
+      issues=$((issues + 1))
+    fi
+  fi
+
   if [[ "$issues" -eq 0 ]]; then
     echo "  ✓  No significant issues detected."
   fi
 
   echo ""
-  echo "═══════════════════════════════════════════════════════"
-  echo " Raw CSV: $target"
-  echo "═══════════════════════════════════════════════════════"
+  printf '═%.0s' $(seq 1 "$REPORT_WIDTH"); echo
+  echo " Raw CSV    : $target"
+  [[ -f "$traffic_file" ]] && echo " Traffic CSV: $traffic_file"
+  printf '═%.0s' $(seq 1 "$REPORT_WIDTH"); echo
 }
 
 cmd_list() {
   echo "Available logs:"
-  ls -lt "$LOG_DIR"/call-*.csv 2>/dev/null | awk '{print "  "$NF"  ("$5" bytes, "$6" "$7" "$8")"}' || echo "  (none)"
+  ls -lt "$LOG_DIR"/call-*.csv 2>/dev/null | grep -v traffic |
+    awk '{print "  "$NF"  ("$5" bytes, "$6" "$7" "$8")"}' || echo "  (none)"
 }
 
 # ── main ─────────────────────────────────────────────────────────────
