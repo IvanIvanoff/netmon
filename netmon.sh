@@ -13,10 +13,11 @@ set -euo pipefail
 
 LOG_DIR="$HOME/call-network-logs"
 PID_FILE="$LOG_DIR/.monitor.pid"
-INTERVAL="${MONITOR_INTERVAL:-10}" # seconds between samples
+INTERVAL="${MONITOR_INTERVAL:-5}" # seconds between samples
 
 PING_TARGET="${PING_TARGET:-8.8.8.8}"
 PING_COUNT=3
+AIRPORT_PATH="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
 
 mkdir -p "$LOG_DIR"
 
@@ -25,8 +26,7 @@ WIFI_HELPER="$LOG_DIR/.wifi_helper"
 _compile_wifi_helper() {
   [[ -x "$WIFI_HELPER" ]] && return 0 # already compiled
   # Check if airport actually provides data (deprecated on Sequoia+)
-  local airport="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-  if [[ -x "$airport" ]] && "$airport" -I 2>/dev/null | grep -q "agrCtlRSSI"; then
+  if [[ -x "$AIRPORT_PATH" ]] && "$AIRPORT_PATH" -I 2>/dev/null | grep -q "agrCtlRSSI"; then
     return 0 # airport works, no need for helper
   fi
   command -v swiftc &>/dev/null || return 1
@@ -48,10 +48,9 @@ timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
 
 get_wifi_info() {
   # Try 1: airport utility (pre-Sonoma macOS)
-  local airport="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-  if [[ -x "$airport" ]]; then
+  if [[ -x "$AIRPORT_PATH" ]]; then
     local out
-    out=$("$airport" -I 2>/dev/null)
+    out=$("$AIRPORT_PATH" -I 2>/dev/null)
     # Only use if it actually contains wifi data (not just a deprecation warning)
     if echo "$out" | grep -q "agrCtlRSSI"; then
       echo "$out"
@@ -63,39 +62,6 @@ get_wifi_info() {
     "$WIFI_HELPER" 2>/dev/null && return
   fi
   echo "wifi: unavailable"
-}
-
-get_rssi() {
-  local info
-  info=$(get_wifi_info)
-  echo "$info" | grep -i "agrCtlRSSI\|signal" | head -1 | awk '{print $NF}'
-}
-
-get_noise() {
-  local info
-  info=$(get_wifi_info)
-  echo "$info" | grep -i "agrCtlNoise" | head -1 | awk '{print $NF}'
-}
-
-get_ssid() {
-  local info
-  info=$(get_wifi_info)
-  local ssid
-  ssid=$(echo "$info" | grep -i "^ *SSID" | head -1 | awk '{print $NF}')
-  [[ -z "$ssid" ]] && ssid=$(networksetup -getairportnetwork en0 2>/dev/null | awk -F': ' '{print $2}')
-  echo "${ssid:-unknown}"
-}
-
-get_channel() {
-  local info
-  info=$(get_wifi_info)
-  echo "$info" | grep -i "channel" | head -1 | awk '{print $NF}'
-}
-
-get_tx_rate() {
-  local info
-  info=$(get_wifi_info)
-  echo "$info" | grep -i "lastTxRate\|maxRate" | head -1 | awk '{print $NF}'
 }
 
 run_ping() {
@@ -112,9 +78,10 @@ parse_ping() {
   local stats_line
   stats_line=$(echo "$output" | grep "round-trip\|rtt" || echo "")
   if [[ -n "$stats_line" ]]; then
-    min=$(echo "$stats_line" | awk -F'[/ =]+' '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) {print $i; exit}}')
-    avg=$(echo "$stats_line" | awk -F'[/ =]+' '{n=0; for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) {n++; if(n==2) {print $i; exit}}}')
-    max=$(echo "$stats_line" | awk -F'[/ =]+' '{n=0; for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) {n++; if(n==3) {print $i; exit}}}')
+    read -r min avg max <<< "$(echo "$stats_line" | awk -F'[/ =]+' '{
+      for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/) { n++; v[n]=$i }
+      print v[1], v[2], v[3]
+    }')"
   else
     min="?"
     avg="?"
@@ -138,12 +105,6 @@ get_active_interface() {
   route -n get default 2>/dev/null | grep "interface:" | awk '{print $2}' || echo "unknown"
 }
 
-get_ip() {
-  local iface
-  iface=$(get_active_interface)
-  ifconfig "$iface" 2>/dev/null | grep "inet " | awk '{print $2}' | head -1 || echo "?"
-}
-
 get_public_ip() {
   curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "?"
 }
@@ -163,16 +124,28 @@ sample_loop() {
   local pub_ip
   pub_ip=$(get_public_ip)
 
+  local ping_file="/tmp/netmon_ping.$$"
+  local dns_file="/tmp/netmon_dns.$$"
+  trap 'rm -f "$ping_file" "$dns_file"' EXIT
+
   while true; do
-    local ts ssid channel rssi noise snr tx_rate iface lip
+    local ts wifi_info ssid channel rssi noise snr tx_rate iface lip
     ts=$(timestamp)
-    ssid=$(get_ssid)
-    channel=$(get_channel)
-    rssi=$(get_rssi)
-    noise=$(get_noise)
-    tx_rate=$(get_tx_rate)
+
+    # Wifi info — single call, parse all fields from cached output
+    wifi_info=$(get_wifi_info)
+    ssid=$(echo "$wifi_info" | grep -i "^ *SSID" | head -1 | awk '{print $NF}')
+    [[ -z "$ssid" ]] && ssid=$(networksetup -getairportnetwork en0 2>/dev/null | awk -F': ' '{print $2}')
+    ssid="${ssid:-unknown}"
+    channel=$(echo "$wifi_info" | grep -i "channel" | head -1 | awk '{print $NF}')
+    rssi=$(echo "$wifi_info" | grep -i "agrCtlRSSI\|signal" | head -1 | awk '{print $NF}')
+    noise=$(echo "$wifi_info" | grep -i "agrCtlNoise" | head -1 | awk '{print $NF}')
+    tx_rate=$(echo "$wifi_info" | grep -i "lastTxRate\|maxRate" | head -1 | awk '{print $NF}')
+
+    # Interface + IP (single get_active_interface call)
     iface=$(get_active_interface)
-    lip=$(get_ip)
+    lip=$(ifconfig "$iface" 2>/dev/null | grep "inet " | awk '{print $2}' | head -1)
+    lip="${lip:-?}"
 
     # Compute SNR
     if [[ "$rssi" =~ ^-?[0-9]+$ ]] && [[ "$noise" =~ ^-?[0-9]+$ ]]; then
@@ -181,15 +154,16 @@ sample_loop() {
       snr="?"
     fi
 
-    # Ping
-    local ping_out ping_parsed loss pmin pavg pmax
-    ping_out=$(run_ping)
-    ping_parsed=$(parse_ping "$ping_out")
-    IFS='|' read -r loss pmin pavg pmax <<<"$ping_parsed"
+    # Ping + DNS in parallel
+    run_ping > "$ping_file" &
+    get_dns_latency > "$dns_file" &
+    wait
 
-    # DNS latency
-    local dns_ms
-    dns_ms=$(get_dns_latency)
+    local ping_parsed loss pmin pavg pmax dns_ms
+    ping_parsed=$(parse_ping "$(cat "$ping_file")")
+    IFS='|' read -r loss pmin pavg pmax <<<"$ping_parsed"
+    dns_ms=$(cat "$dns_file")
+    dns_ms="${dns_ms:-?}"
 
     echo "${ts},${ssid},${channel},${rssi},${noise},${snr},${tx_rate},${iface},${lip},${pub_ip},${PING_TARGET},${loss},${pmin},${pavg},${pmax},${dns_ms}" >>"$logfile"
 
