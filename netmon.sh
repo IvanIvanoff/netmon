@@ -27,9 +27,11 @@ WIFI_HELPER="$LOG_DIR/.wifi_helper"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MONITOR_TUI_PY="$SCRIPT_DIR/netmon_tui.py"
 
-MAIN_CSV_HEADER="timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms"
+MAIN_CSV_HEADER="timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms,gateway_ip,gw_ping_ms,jitter_ms,bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,mem_pressure"
 TRAFFIC_CSV_HEADER="sample_ts,process,pid,bytes_in,bytes_out,rx_dupe,rx_ooo,retransmits"
 CONNECTIONS_CSV_HEADER="sample_ts,process,pid,remote_ip,remote_port,bytes_in,bytes_out,retransmits"
+SCAN_CSV_HEADER="scan_ts,ssid,bssid,rssi,channel,security"
+SCAN_INTERVAL=15  # run wifi scan every N sample cycles
 
 # -- generic helpers -------------------------------------------------
 
@@ -138,14 +140,30 @@ maybe_compile_wifi_helper() {
   local tmp_binary
   tmp_binary=$(make_tmp_file "wifi_helper")
 
-  if swiftc -O -o "$tmp_binary" - 2>/dev/null <<'SWIFT'
+  if swiftc -O -o "$tmp_binary" - 2>&1 | head -5 <<'SWIFT'
 import CoreWLAN
 guard let iface = CWWiFiClient.shared().interface() else { exit(1) }
 print("     agrCtlRSSI: \(iface.rssiValue())")
 print("     agrCtlNoise: \(iface.noiseMeasurement())")
-print("          SSID: \(iface.ssid() ?? \"unknown\")")
-print("       channel: \(iface.wlanChannel()?.channelNumber ?? 0)")
+let ssid = iface.ssid() ?? "unknown"
+print("          SSID: \(ssid)")
+let ch = iface.wlanChannel()
+let chNum = ch?.channelNumber ?? 0
+print("       channel: \(chNum)")
 print("     lastTxRate: \(Int(iface.transmitRate()))")
+let bssid = iface.bssid() ?? "?"
+print("         BSSID: \(bssid)")
+var chWidth = "?"
+if let cw = ch {
+    switch cw.channelWidth {
+    case .width20MHz: chWidth = "20"
+    case .width40MHz: chWidth = "40"
+    case .width80MHz: chWidth = "80"
+    case .width160MHz: chWidth = "160"
+    @unknown default: chWidth = "?"
+    }
+}
+print("  channelWidth: \(chWidth)")
 SWIFT
   then
     mv "$tmp_binary" "$WIFI_HELPER"
@@ -181,11 +199,8 @@ get_wifi_info() {
 parse_wifi_info() {
   awk '
     BEGIN {
-      ssid = "unknown"
-      channel = "?"
-      rssi = "?"
-      noise = "?"
-      tx_rate = "?"
+      ssid = "unknown"; channel = "?"; rssi = "?"; noise = "?"
+      tx_rate = "?"; bssid = "?"; mcs_idx = "?"; ch_width = "?"
     }
     $1 == "SSID:" {
       $1 = ""
@@ -193,15 +208,23 @@ parse_wifi_info() {
       if ($0 != "") ssid = $0
     }
     $1 == "channel:" {
-      channel = $2
+      raw = $2
+      channel = raw
       sub(/,.*/, "", channel)
+      if (raw ~ /,/) {
+        cw = raw; sub(/[^,]*,/, "", cw)
+        if (cw ~ /^[0-9]+$/) ch_width = cw
+      }
     }
     $1 == "agrCtlRSSI:" { rssi = $2 }
     $1 == "agrCtlNoise:" { noise = $2 }
     $1 == "lastTxRate:" { tx_rate = $2 }
     $1 == "maxRate:" { tx_rate = $2 }
+    $1 == "BSSID:" { bssid = $2 }
+    $1 == "MCS:" { mcs_idx = $2 }
+    $1 == "channelWidth:" { ch_width = $2 }
     END {
-      printf "%s|%s|%s|%s|%s\n", ssid, channel, rssi, noise, tx_rate
+      printf "%s|%s|%s|%s|%s|%s|%s|%s\n", ssid, channel, rssi, noise, tx_rate, bssid, mcs_idx, ch_width
     }
   '
 }
@@ -230,9 +253,11 @@ parse_ping() {
   local output="$1"
   local loss="?" min="?" avg="?" max="?"
 
-  loss=$(awk -F"[, %]+" '
+  loss=$(awk '
     /packet loss/ {
-      for (i = 1; i <= NF; i++) if ($i == "loss") { print $(i - 1); exit }
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[0-9.]+%$/) { sub(/%/, "", $i); print $i; exit }
+      }
     }
   ' <<<"$output")
   loss="${loss:-?}"
@@ -329,6 +354,161 @@ interface_counters() {
       if (seen) printf "%d|%d\n", max_in, max_out
     }
   '
+}
+
+# -- extended metrics ------------------------------------------------
+
+get_gateway_ip() {
+  route -n get default 2>/dev/null | awk '/gateway:/ { print $2; exit }'
+}
+
+get_gateway_ping() {
+  local gw="$1"
+  [[ -n "$gw" && "$gw" != "?" ]] || { echo "?"; return 0; }
+  local ms
+  ms=$(ping -c 1 -W 500 "$gw" 2>/dev/null | awk '/time=/ { for(i=1;i<=NF;i++) if($i ~ /^time=/) { sub(/time=/, "", $i); printf "%.1f", $i+0; exit } }' || true)
+  echo "${ms:-?}"
+}
+
+parse_jitter() {
+  local output="$1"
+  printf "%s\n" "$output" | awk '
+    /time=/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^time=/) {
+          sub(/time=/, "", $i)
+          t[++n] = $i + 0
+        }
+      }
+    }
+    END {
+      if (n < 2) { print "?"; exit }
+      sum = 0
+      for (i = 1; i <= n; i++) sum += t[i]
+      mean = sum / n
+      jsum = 0
+      for (i = 1; i <= n; i++) {
+        d = t[i] - mean
+        if (d < 0) d = -d
+        jsum += d
+      }
+      printf "%.1f", jsum / n
+    }
+  '
+}
+
+channel_to_band() {
+  local ch="$1"
+  [[ "$ch" =~ ^[0-9]+$ ]] || { echo "?"; return 0; }
+  if (( ch >= 1 && ch <= 14 )); then
+    echo "2.4"
+  elif (( ch >= 32 && ch <= 177 )); then
+    echo "5"
+  else
+    echo "?"
+  fi
+}
+
+get_cpu_usage() {
+  ps -A -o %cpu= 2>/dev/null | awk '{s+=$1}END{printf "%.0f", s+0}'
+}
+
+get_mem_pressure() {
+  vm_stat 2>/dev/null | awk '
+    function num(s) { gsub(/[^0-9]/, "", s); return s+0 }
+    /Pages free:/ { free = num($NF) }
+    /Pages active:/ { active = num($NF) }
+    /Pages inactive:/ { inactive = num($NF) }
+    /Pages speculative:/ { spec = num($NF) }
+    /Pages wired down:/ { wired = num($NF) }
+    /compressor:/ { comp = num($NF) }
+    END {
+      used = active + wired + comp
+      total = free + active + inactive + spec + wired + comp
+      if (total > 0) printf "%.0f", (used * 100.0 / total)
+      else print "?"
+    }
+  '
+}
+
+get_interface_errors() {
+  local iface="$1"
+  [[ -n "$iface" ]] || { echo "0|0"; return 0; }
+  netstat -ibn -I "$iface" 2>/dev/null | awk -v iface="$iface" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "Ierrs") ie_col = i
+        if ($i == "Oerrs") oe_col = i
+      }
+      next
+    }
+    $1 == iface && ie_col > 0 && oe_col > 0 {
+      ie = $(ie_col)
+      oe = $(oe_col)
+      if (ie ~ /^[0-9]+$/ && oe ~ /^[0-9]+$/) {
+        if (!seen || ie+0 > max_ie) max_ie = ie+0
+        if (!seen || oe+0 > max_oe) max_oe = oe+0
+        seen = 1
+      }
+    }
+    END {
+      if (seen) printf "%d|%d\n", max_ie, max_oe
+      else print "0|0"
+    }
+  '
+}
+
+run_wifi_scan() {
+  # Uses system_profiler to get nearby networks + extended current network info.
+  # Also writes PHY mode and MCS to a sidecar file for the sample loop.
+  local scan_file="$1" ts="$2" ext_file="$3"
+  local sp_output
+  sp_output=$(system_profiler SPAirPortDataType 2>/dev/null || true)
+  [[ -n "$sp_output" ]] || return 0
+
+  # Extract current network PHY mode and MCS into sidecar file
+  printf "%s\n" "$sp_output" | awk '
+    /Current Network Information:/,/Other Local Wi-Fi Networks:/ {
+      if (/PHY Mode:/) { sub(/.*PHY Mode: */, ""); print "phy_mode=" $0 }
+      if (/MCS Index:/) { sub(/.*MCS Index: */, ""); print "mcs_index=" $0 }
+    }
+  ' >"$ext_file"
+
+  # Extract neighboring networks into scan CSV
+  printf "%s\n" "$sp_output" | awk -v ts="$ts" '
+    /Other Local Wi-Fi Networks:/,0 {
+      if (/Other Local Wi-Fi Networks:/) { next }
+      if (/:$/) {
+        if (ssid != "" && ch != "") {
+          gsub(/,/, ";", ssid)
+          gsub(/,/, ";", ch)
+          gsub(/,/, ";", sec)
+          printf "%s,%s,%s,%s,%s,%s\n", ts, ssid, "-", rssi, ch, sec
+        }
+        ssid = $0; gsub(/^ *| *:$/, "", ssid)
+        ch = ""; rssi = "?"; sec = ""
+        next
+      }
+      if (/Channel:/) {
+        sub(/.*Channel: */, "")
+        ch = $0
+      }
+      if (/Security:/) { sub(/.*Security: */, ""); sec = $0 }
+      if (/Signal \/ Noise:/) {
+        sub(/.*Signal \/ Noise: */, "")
+        sub(/ dBm.*/, "")
+        rssi = $0
+      }
+    }
+    END {
+      if (ssid != "" && ch != "") {
+        gsub(/,/, ";", ssid)
+        gsub(/,/, ";", ch)
+        gsub(/,/, ";", sec)
+        printf "%s,%s,%s,%s,%s,%s\n", ts, ssid, "-", rssi, ch, sec
+      }
+    }
+  ' >>"$scan_file"
 }
 
 # -- nettop snapshots ------------------------------------------------
@@ -463,70 +643,118 @@ capture_connections() {
 # -- sampling loop ---------------------------------------------------
 
 sample_loop() {
-  local logfile="$1" traffic_file="$2" conn_file="$3"
+  # Disable errexit: the monitor must survive transient failures
+  # (e.g. WiFi drops during network switch)
+  set +e
+
+  local logfile="$1" traffic_file="$2" conn_file="$3" scan_file="$4"
 
   echo "$MAIN_CSV_HEADER" >"$logfile"
   echo "$TRAFFIC_CSV_HEADER" >"$traffic_file"
   echo "$CONNECTIONS_CSV_HEADER" >"$conn_file"
+  echo "$SCAN_CSV_HEADER" >"$scan_file"
 
   local pub_ip
   pub_ip=$(get_public_ip)
   pub_ip="${pub_ip:-?}"
 
-  local ping_file dns_file prev_traffic curr_traffic prev_conn curr_conn name_file
+  local ping_file dns_file gw_ping_file prev_traffic curr_traffic prev_conn curr_conn name_file ext_file
   ping_file=$(make_tmp_file "ping")
   dns_file=$(make_tmp_file "dns")
+  gw_ping_file=$(make_tmp_file "gwping")
   prev_traffic=$(make_tmp_file "tprev")
   curr_traffic=$(make_tmp_file "tcurr")
   prev_conn=$(make_tmp_file "cprev")
   curr_conn=$(make_tmp_file "ccurr")
   name_file=$(make_tmp_file "names")
+  ext_file=$(make_tmp_file "ext")
 
   # shellcheck disable=SC2064
-  trap "rm -f '$ping_file' '$dns_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$name_file'" EXIT INT TERM
+  trap "rm -f '$ping_file' '$dns_file' '$gw_ping_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$name_file' '$ext_file'" EXIT INT TERM
 
   # Baseline snapshots (not logged; used as zero point)
   _nettop_snapshot >"$prev_traffic" || : >"$prev_traffic"
   _nettop_conn_snapshot >"$prev_conn" || : >"$prev_conn"
 
+  # Baseline interface errors
+  local prev_ierrs=0 prev_oerrs=0
+  local scan_counter=0
+
   while true; do
     local ts wifi_info parsed_wifi ssid channel rssi noise tx_rate
-    local iface lip snr ping_pid dns_pid ping_output ping_parsed
+    local bssid mcs_idx raw_channel_width
+    local iface lip snr ping_pid dns_pid gw_ping_pid ping_output ping_parsed
     local loss pmin pavg pmax dns_ms
+    local gateway_ip gw_ping_ms jitter_ms channel_band
+    local curr_ierrs curr_oerrs if_ierrs if_oerrs
+    local cpu_usage mem_pressure
 
     ts=$(timestamp)
 
     wifi_info=$(get_wifi_info || true)
     parsed_wifi=$(printf "%s\n" "$wifi_info" | parse_wifi_info)
-    IFS="|" read -r ssid channel rssi noise tx_rate <<<"$parsed_wifi"
+    IFS="|" read -r ssid channel rssi noise tx_rate bssid mcs_idx raw_channel_width <<<"$parsed_wifi"
 
     if [[ -z "$ssid" || "$ssid" == "unknown" ]]; then
       ssid=$(fallback_ssid || true)
       ssid="${ssid:-unknown}"
     fi
 
-    iface=$(get_active_interface)
-    lip=$(get_local_ip "$iface")
+    iface=$(get_active_interface || echo "unknown")
+    iface="${iface:-unknown}"
+    lip=$(get_local_ip "$iface" 2>/dev/null || true)
     lip="${lip:-?}"
 
-    if [[ "$rssi" =~ ^-?[0-9]+$ && "$noise" =~ ^-?[0-9]+$ ]]; then
+    if [[ "$rssi" =~ ^-?[0-9]+$ && "$noise" =~ ^-?[0-9]+$ && "$noise" != "0" ]]; then
       snr=$((rssi - noise))
     else
       snr="?"
     fi
 
+    # Derive band from channel number
+    channel_band=$(channel_to_band "$channel")
+
+    # Get gateway
+    gateway_ip=$(get_gateway_ip || true)
+    gateway_ip="${gateway_ip:-?}"
+
+    # Spawn ping, DNS, and gateway ping in background
     run_ping >"$ping_file" &
     ping_pid=$!
     get_dns_latency >"$dns_file" &
     dns_pid=$!
+    get_gateway_ping "$gateway_ip" >"$gw_ping_file" &
+    gw_ping_pid=$!
 
-    _nettop_snapshot >"$curr_traffic" || : >"$curr_traffic"
-    build_name_map "$curr_traffic" "$name_file"
-    capture_traffic "$ts" "$traffic_file" "$prev_traffic" "$curr_traffic" "$name_file"
-    capture_connections "$ts" "$conn_file" "$prev_conn" "$curr_conn" "$name_file"
+    # Traffic snapshots (while pings are in flight)
+    _nettop_snapshot >"$curr_traffic" 2>/dev/null || : >"$curr_traffic"
+    build_name_map "$curr_traffic" "$name_file" 2>/dev/null || true
+    capture_traffic "$ts" "$traffic_file" "$prev_traffic" "$curr_traffic" "$name_file" || true
+    capture_connections "$ts" "$conn_file" "$prev_conn" "$curr_conn" "$name_file" || true
 
+    # System metrics (fast, no background needed)
+    cpu_usage=$(get_cpu_usage)
+    cpu_usage="${cpu_usage:-?}"
+    mem_pressure=$(get_mem_pressure)
+    mem_pressure="${mem_pressure:-?}"
+
+    # Interface errors (delta since last sample)
+    local err_data
+    err_data=$(get_interface_errors "$iface" || echo "0|0")
+    IFS="|" read -r curr_ierrs curr_oerrs <<<"$err_data"
+    curr_ierrs="${curr_ierrs:-0}"
+    curr_oerrs="${curr_oerrs:-0}"
+    if_ierrs=$(( (curr_ierrs + 0) - (prev_ierrs + 0) ))
+    if_oerrs=$(( (curr_oerrs + 0) - (prev_oerrs + 0) ))
+    [[ "$if_ierrs" -lt 0 ]] 2>/dev/null && if_ierrs=0
+    [[ "$if_oerrs" -lt 0 ]] 2>/dev/null && if_oerrs=0
+    prev_ierrs=$curr_ierrs
+    prev_oerrs=$curr_oerrs
+
+    # Wait for background network probes
     wait "$ping_pid" 2>/dev/null || true
     wait "$dns_pid" 2>/dev/null || true
+    wait "$gw_ping_pid" 2>/dev/null || true
 
     ping_output=$(cat "$ping_file" 2>/dev/null || true)
     ping_parsed=$(parse_ping "$ping_output")
@@ -535,7 +763,28 @@ sample_loop() {
     dns_ms=$(cat "$dns_file" 2>/dev/null || true)
     dns_ms="${dns_ms:-?}"
 
-    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    gw_ping_ms=$(cat "$gw_ping_file" 2>/dev/null || true)
+    gw_ping_ms="${gw_ping_ms:-?}"
+
+    jitter_ms=$(parse_jitter "$ping_output")
+    jitter_ms="${jitter_ms:-?}"
+
+    # Read extended WiFi info from system_profiler sidecar (if available)
+    if [[ -s "$ext_file" ]]; then
+      local sp_phy sp_mcs
+      sp_phy=$(awk -F= '/^phy_mode=/ {print $2}' "$ext_file")
+      sp_mcs=$(awk -F= '/^mcs_index=/ {print $2}' "$ext_file")
+      [[ -n "$sp_phy" ]] && mcs_idx="${sp_mcs:-$mcs_idx}"
+    fi
+
+    # WiFi scan via system_profiler (every SCAN_INTERVAL cycles, in background)
+    scan_counter=$((scan_counter + 1))
+    if (( scan_counter >= SCAN_INTERVAL )); then
+      scan_counter=0
+      run_wifi_scan "$scan_file" "$ts" "$ext_file" &
+    fi
+
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
       "$(sanitize_csv_field "$ts")" \
       "$(sanitize_csv_field "$ssid")" \
       "$(sanitize_csv_field "$channel")" \
@@ -551,7 +800,18 @@ sample_loop() {
       "$(sanitize_csv_field "$pmin")" \
       "$(sanitize_csv_field "$pavg")" \
       "$(sanitize_csv_field "$pmax")" \
-      "$(sanitize_csv_field "$dns_ms")" >>"$logfile"
+      "$(sanitize_csv_field "$dns_ms")" \
+      "$(sanitize_csv_field "$gateway_ip")" \
+      "$(sanitize_csv_field "$gw_ping_ms")" \
+      "$(sanitize_csv_field "$jitter_ms")" \
+      "$(sanitize_csv_field "${bssid:-?}")" \
+      "$(sanitize_csv_field "${mcs_idx:-?}")" \
+      "$(sanitize_csv_field "$channel_band")" \
+      "$(sanitize_csv_field "${raw_channel_width:-?}")" \
+      "$(sanitize_csv_field "$if_ierrs")" \
+      "$(sanitize_csv_field "$if_oerrs")" \
+      "$(sanitize_csv_field "$cpu_usage")" \
+      "$(sanitize_csv_field "$mem_pressure")" >>"$logfile"
 
     sleep "$INTERVAL"
   done
@@ -578,20 +838,22 @@ cmd_start() {
     rm -f "$PID_FILE"
   fi
 
-  local stamp logfile traffic_file conn_file
+  local stamp logfile traffic_file conn_file scan_file
   stamp=$(date +%Y%m%d-%H%M%S)
   logfile="$LOG_DIR/call-${stamp}.csv"
   traffic_file="$LOG_DIR/call-${stamp}-traffic.csv"
   conn_file="$LOG_DIR/call-${stamp}-connections.csv"
+  scan_file="$LOG_DIR/call-${stamp}-scan.csv"
 
   echo "Starting network monitor..."
   echo "  Log file : $logfile"
   echo "  Traffic  : $traffic_file"
   echo "  Connects : $conn_file"
+  echo "  WiFi scan: $scan_file"
   echo "  Interval : ${INTERVAL}s"
   echo "  Ping host: $PING_TARGET"
 
-  sample_loop "$logfile" "$traffic_file" "$conn_file" &
+  sample_loop "$logfile" "$traffic_file" "$conn_file" "$scan_file" &
   local pid=$!
   echo "$pid" >"$PID_FILE"
   echo "  PID      : $pid"
