@@ -155,6 +155,20 @@ The TUI runs these checks continuously:
 6. **TUI** (`netmon_tui.py`) reads the CSV files and refreshes every second
 7. The monitor is resilient to network switches — transient failures don't crash the collector
 
+## Tests
+
+```bash
+# Python unit tests — helpers, CSV parsing, diagnostics, thresholds (182 tests, <1s)
+uv run pytest tests/
+
+# Bash parser tests — parse_ping, parse_wifi_info, sanitize_csv_field, etc. (46 tests)
+bash tests/test_bash_parsers.sh
+
+# Integration test — starts a real collector, validates CSV output and
+# runs the full pipeline: collector → CSV → Python parser → diagnostics (~20s)
+bash tests/test_collector_integration.sh
+```
+
 ## License
 
 MIT

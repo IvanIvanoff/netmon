@@ -1,0 +1,6 @@
+timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms,gateway_ip,gw_ping_ms,jitter_ms,bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,mem_pressure
+2026-03-12 14:00:00,MyNetwork,36,-42,-95,53,800,en0,192.168.1.100,1.2.3.4,8.8.8.8,5.0,50.0,85.0,200.0,40,192.168.1.1,2.0,15.0,aa:bb:cc:dd:ee:ff,9,5,80,0,0,45,60
+2026-03-12 14:00:02,MyNetwork,36,-43,-95,52,790,en0,192.168.1.100,1.2.3.4,8.8.8.8,5.0,55.0,90.0,210.0,45,192.168.1.1,1.8,18.0,aa:bb:cc:dd:ee:ff,9,5,80,0,0,42,58
+2026-03-12 14:00:04,MyNetwork,36,-41,-95,54,810,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,60.0,95.0,220.0,50,192.168.1.1,2.2,20.0,aa:bb:cc:dd:ee:ff,9,5,80,0,0,48,62
+2026-03-12 14:00:06,MyNetwork,36,-44,-95,51,780,en0,192.168.1.100,1.2.3.4,8.8.8.8,5.0,45.0,80.0,190.0,38,192.168.1.1,1.5,12.0,aa:bb:cc:dd:ee:ff,9,5,80,0,0,44,59
+2026-03-12 14:00:08,MyNetwork,36,-42,-95,53,800,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,65.0,100.0,230.0,55,192.168.1.1,2.5,22.0,aa:bb:cc:dd:ee:ff,9,5,80,0,0,50,63

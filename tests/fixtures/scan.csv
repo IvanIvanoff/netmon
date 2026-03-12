@@ -1,0 +1,12 @@
+scan_ts,ssid,bssid,rssi,channel,security
+2026-03-12 14:00:00,<redacted>,-,-62,36 (5GHz; 80MHz),WPA2 Personal
+2026-03-12 14:00:00,<redacted>,-,-71,36 (5GHz; 80MHz),WPA3 Personal
+2026-03-12 14:00:00,<redacted>,-,-80,1 (2.4GHz; 20MHz),WPA2 Personal
+2026-03-12 14:00:00,<redacted>,-,-75,11 (2.4GHz; 20MHz),WPA2 Personal
+2026-03-12 14:00:00,<redacted>,-,-68,44 (5GHz; 80MHz),WPA2/WPA3 Personal
+2026-03-12 14:00:15,<redacted>,-,-63,36 (5GHz; 80MHz),WPA2 Personal
+2026-03-12 14:00:15,<redacted>,-,-70,36 (5GHz; 80MHz),WPA3 Personal
+2026-03-12 14:00:15,<redacted>,-,-82,1 (2.4GHz; 20MHz),WPA2 Personal
+2026-03-12 14:00:15,<redacted>,-,-74,11 (2.4GHz; 20MHz),WPA2 Personal
+2026-03-12 14:00:15,<redacted>,-,-69,44 (5GHz; 80MHz),WPA2/WPA3 Personal
+2026-03-12 14:00:15,<redacted>,-,-85,6 (2.4GHz; 20MHz),WPA2 Personal
