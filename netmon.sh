@@ -24,6 +24,8 @@ REPORT_WIDTH=140
 
 AIRPORT_PATH="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
 WIFI_HELPER="$LOG_DIR/.wifi_helper"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MONITOR_TUI_PY="$SCRIPT_DIR/netmon_tui.py"
 
 MAIN_CSV_HEADER="timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms"
 TRAFFIC_CSV_HEADER="sample_ts,process,pid,bytes_in,bytes_out,rx_dupe,rx_ooo,retransmits"
@@ -301,6 +303,34 @@ get_public_ip() {
   fi
 }
 
+interface_counters() {
+  # Read cumulative interface counters as: ibytes|obytes
+  local iface="$1"
+  [[ -n "$iface" ]] || return 1
+
+  netstat -ibn -I "$iface" 2>/dev/null | awk -v iface="$iface" '
+    NR == 1 {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "Ibytes") in_col = i
+        if ($i == "Obytes") out_col = i
+      }
+      next
+    }
+    $1 == iface && in_col > 0 && out_col > 0 {
+      ib = $(in_col)
+      ob = $(out_col)
+      if (ib ~ /^[0-9]+$/ && ob ~ /^[0-9]+$/) {
+        if (!seen || ib + 0 > max_in) max_in = ib + 0
+        if (!seen || ob + 0 > max_out) max_out = ob + 0
+        seen = 1
+      }
+    }
+    END {
+      if (seen) printf "%d|%d\n", max_in, max_out
+    }
+  '
+}
+
 # -- nettop snapshots ------------------------------------------------
 
 _nettop_snapshot() {
@@ -310,16 +340,18 @@ _nettop_snapshot() {
 }
 
 _nettop_conn_snapshot() {
-  # Connection-level snapshot: process.pid|remote_ip:port,bytes_in,bytes_out,retransmits
+  # Connection-level snapshot:
+  #   process.pid|local_ip:port<->remote_ip:port,bytes_in,bytes_out,retransmits
+  # Keep full flow key so multiple sockets to the same remote do not collide.
   nettop -m tcp -L 1 -n -x 2>/dev/null | awk -F, '
     NR == 1 { next }
     # Process summary line (interface field is empty)
     $3 == "" && $2 ~ /\.[0-9]+$/ { proc = $2; next }
     # Connection line with traffic
     $2 ~ /<->/ && ($5 + 0 > 0 || $6 + 0 > 0) {
-      split($2, lr, "<->")
-      remote = lr[2]
-      print proc "|" remote "," $5 "," $6 "," $9
+      flow = $2
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", flow)
+      print proc "|" flow "," $5 "," $6 "," $9
     }
   '
 }
@@ -401,7 +433,10 @@ capture_connections() {
         if (din > 0 || dout > 0) {
           split($1, kp, "|")
           proc_raw = kp[1]
-          remote = kp[2]
+          flow = kp[2]
+          split(flow, lr, "<->")
+          remote = (length(lr[2]) > 0 ? lr[2] : flow)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", remote)
           pid = ""
           n = split(proc_raw, p, ".")
           if (n > 1 && p[n] ~ /^[0-9]+$/) {
@@ -604,6 +639,161 @@ cmd_stop() {
     conns="${latest%.csv}-connections.csv"
     [[ -f "$conns" ]] && echo "Connections log: $conns"
   fi
+}
+
+running_monitor_pid() {
+  local pid
+  pid=$(read_pid_file 2>/dev/null || true)
+  [[ -n "$pid" ]] || return 1
+  pid_is_monitor "$pid" || return 1
+  printf "%s\n" "$pid"
+}
+
+cmd_monitor() {
+  ensure_log_dir
+  assert_supported_os
+
+  local attach_only=0 keep_running=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --attach)
+      attach_only=1
+      ;;
+    --keep-running)
+      keep_running=1
+      ;;
+    -h | --help)
+      echo "Usage: $0 monitor [--attach] [--keep-running]"
+      echo "  --attach       Do not start collector; attach to latest running session"
+      echo "  --keep-running Keep collector running after quitting TUI"
+      return 0
+      ;;
+    *)
+      die "Unknown monitor option: $1"
+      ;;
+    esac
+    shift
+  done
+
+  has_cmd python3 || die "python3 is required for monitor TUI."
+  [[ -f "$MONITOR_TUI_PY" ]] || die "Monitor UI script not found: $MONITOR_TUI_PY"
+
+  local started_here=0
+  if ! running_monitor_pid >/dev/null 2>&1; then
+    if [[ "$attach_only" -eq 1 ]]; then
+      die "No running collector to attach to."
+    fi
+    cmd_start
+    started_here=1
+    sleep 0.2
+  fi
+
+  local main_file
+  main_file=$(latest_main_log)
+  [[ -n "$main_file" ]] || die "No main log file found to monitor."
+
+  local rc=0
+  python3 "$MONITOR_TUI_PY" \
+    --main-file "$main_file" \
+    --log-dir "$LOG_DIR" \
+    --pid-file "$PID_FILE" \
+    --refresh 1.0 || rc=$?
+
+  if [[ "$started_here" -eq 1 && "$keep_running" -eq 0 ]]; then
+    cmd_stop || true
+  fi
+
+  return "$rc"
+}
+
+cmd_measure() {
+  assert_supported_os
+  has_cmd netstat || die "netstat is required for interface measurement."
+
+  local duration="60" iface="" opt=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -d | --duration)
+      opt="$1"
+      shift
+      [[ $# -gt 0 ]] || die "Missing value for $opt"
+      duration="$1"
+      ;;
+    -i | --interface)
+      opt="$1"
+      shift
+      [[ $# -gt 0 ]] || die "Missing value for $opt"
+      iface="$1"
+      ;;
+    -h | --help)
+      echo "Usage: $0 measure [--duration seconds] [--interface en0]"
+      echo "  --duration  Sample window in seconds (default: 60)"
+      echo "  --interface Interface name (default: current route interface)"
+      return 0
+      ;;
+    *)
+      die "Unknown measure option: $1"
+      ;;
+    esac
+    shift
+  done
+
+  [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Duration must be numeric."
+
+  if [[ -z "$iface" ]]; then
+    iface=$(get_active_interface)
+  fi
+  [[ -n "$iface" && "$iface" != "unknown" ]] || die "Could not detect interface; pass --interface."
+
+  local start_ts end_ts start_in start_out end_in end_out
+  IFS="|" read -r start_in start_out <<<"$(interface_counters "$iface")"
+  [[ -n "${start_in:-}" && -n "${start_out:-}" ]] || die "Failed to read counters for interface '$iface'."
+
+  start_ts=$(timestamp)
+  sleep "$duration"
+  end_ts=$(timestamp)
+
+  IFS="|" read -r end_in end_out <<<"$(interface_counters "$iface")"
+  [[ -n "${end_in:-}" && -n "${end_out:-}" ]] || die "Failed to read counters for interface '$iface' after sampling."
+
+  local recv_bytes sent_bytes total_bytes
+  recv_bytes=$((end_in - start_in))
+  sent_bytes=$((end_out - start_out))
+  ((recv_bytes < 0)) && recv_bytes=0
+  ((sent_bytes < 0)) && sent_bytes=0
+  total_bytes=$((recv_bytes + sent_bytes))
+
+  awk -v iface="$iface" \
+    -v start_ts="$start_ts" \
+    -v end_ts="$end_ts" \
+    -v sec="$duration" \
+    -v recv="$recv_bytes" \
+    -v sent="$sent_bytes" \
+    -v total="$total_bytes" '
+    function human(b) {
+      if (b >= 1073741824) return sprintf("%.2f GB", b / 1073741824)
+      if (b >= 1048576) return sprintf("%.2f MB", b / 1048576)
+      if (b >= 1024) return sprintf("%.2f KB", b / 1024)
+      return sprintf("%d B", b)
+    }
+    BEGIN {
+      if (sec <= 0) sec = 1
+      print "===================================================================="
+      print " Interface Throughput Sample"
+      print "===================================================================="
+      printf " Interface : %s\n", iface
+      printf " Window    : %s -> %s (%.1fs)\n", start_ts, end_ts, sec + 0
+      print ""
+      printf " Recv      : %s\n", human(recv + 0)
+      printf " Sent      : %s\n", human(sent + 0)
+      printf " Total     : %s\n", human(total + 0)
+      print ""
+      printf " Avg recv/s: %s/s\n", human((recv + 0) / sec)
+      printf " Avg sent/s: %s/s\n", human((sent + 0) / sec)
+      printf " Avg total : %s/s\n", human((total + 0) / sec)
+      print "===================================================================="
+    }
+  '
 }
 
 resolve_related_logs() {
@@ -1005,6 +1195,14 @@ start)
 stop)
   cmd_stop
   ;;
+monitor)
+  shift
+  cmd_monitor "$@"
+  ;;
+measure)
+  shift
+  cmd_measure "$@"
+  ;;
 review)
   cmd_review "${2:-}"
   ;;
@@ -1017,8 +1215,17 @@ help | *)
   echo "Usage:"
   echo "  $0 start           Start monitoring (runs in background)"
   echo "  $0 stop            Stop monitoring"
+  echo "  $0 monitor         Start (or attach) and show live ncurses dashboard"
+  echo "  $0 measure         Measure interface throughput for a time window"
   echo "  $0 review [file]   Review latest (or specified) log"
   echo "  $0 list            List all log files"
+  echo
+  echo "Monitor options:"
+  echo "  $0 monitor --attach       Attach to existing collector only"
+  echo "  $0 monitor --keep-running Keep collector running after quitting TUI"
+  echo
+  echo "Measure options:"
+  echo "  $0 measure --duration 60 --interface en0"
   echo
   echo "Environment variables:"
   echo "  MONITOR_INTERVAL   Seconds between samples (default: 2)"
