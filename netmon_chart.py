@@ -173,16 +173,20 @@ def _aggregate_traffic(rows: List[Dict[str, str]], top_n: int = 10,
                        ) -> List[dict]:
     """Aggregate per-process traffic: totals + time series."""
     from collections import defaultdict
-    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])  # in, out, retx
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     series: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
         proc = r.get("process", "?")
         b_in = int(r.get("bytes_in", 0) or 0)
         b_out = int(r.get("bytes_out", 0) or 0)
+        p_in = int(r.get("packets_in", 0) or 0)
+        p_out = int(r.get("packets_out", 0) or 0)
         retx = int(r.get("retransmits", 0) or 0)
         totals[proc][0] += b_in
         totals[proc][1] += b_out
-        totals[proc][2] += retx
+        totals[proc][2] += p_in
+        totals[proc][3] += p_out
+        totals[proc][4] += retx
         series[proc].append({
             "ts": r.get("sample_ts", ""),
             "in": b_in, "out": b_out,
@@ -190,15 +194,18 @@ def _aggregate_traffic(rows: List[Dict[str, str]], top_n: int = 10,
     ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
                     reverse=True)[:top_n]
     result = []
-    for proc, (total_in, total_out, total_retx) in ranked:
+    for proc, (total_in, total_out, total_pin, total_pout, total_retx) in ranked:
         if total_in + total_out == 0:
             continue
+        total_pkts = total_pin + total_pout
         pts = series[proc]
         result.append({
             "process": proc,
             "bytes_in": total_in,
             "bytes_out": total_out,
+            "packets": total_pkts,
             "retransmits": total_retx,
+            "retx_pct": round(total_retx / (total_pout + total_retx) * 100, 2) if (total_pout + total_retx) else 0,
             "human_in": _human_bytes(total_in),
             "human_out": _human_bytes(total_out),
             "series_ts": [p["ts"] for p in pts],
@@ -212,19 +219,23 @@ def _aggregate_connections(rows: List[Dict[str, str]], top_n: int = 10,
                            ) -> List[dict]:
     """Aggregate per-connection traffic: totals + time series."""
     from collections import defaultdict
-    totals: Dict[str, List] = defaultdict(lambda: [0, 0, 0, "", ""])
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     series: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
         proc = r.get("process", "?")
         remote = r.get("remote_ip", "?")
         port = r.get("remote_port", "?")
-        key = f"{proc} → {remote}:{port}"
+        key = f"{proc} \u2192 {remote}:{port}"
         b_in = int(r.get("bytes_in", 0) or 0)
         b_out = int(r.get("bytes_out", 0) or 0)
+        p_in = int(r.get("packets_in", 0) or 0)
+        p_out = int(r.get("packets_out", 0) or 0)
         retx = int(r.get("retransmits", 0) or 0)
         totals[key][0] += b_in
         totals[key][1] += b_out
-        totals[key][2] += retx
+        totals[key][2] += p_in
+        totals[key][3] += p_out
+        totals[key][4] += retx
         series[key].append({
             "ts": r.get("sample_ts", ""),
             "in": b_in, "out": b_out,
@@ -232,15 +243,18 @@ def _aggregate_connections(rows: List[Dict[str, str]], top_n: int = 10,
     ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
                     reverse=True)[:top_n]
     result = []
-    for key, (total_in, total_out, total_retx, _, _) in ranked:
+    for key, (total_in, total_out, total_pin, total_pout, total_retx) in ranked:
         if total_in + total_out == 0:
             continue
+        total_pkts = total_pin + total_pout
         pts = series[key]
         result.append({
             "connection": key,
             "bytes_in": total_in,
             "bytes_out": total_out,
+            "packets": total_pkts,
             "retransmits": total_retx,
+            "retx_pct": round(total_retx / (total_pout + total_retx) * 100, 2) if (total_pout + total_retx) else 0,
             "human_in": _human_bytes(total_in),
             "human_out": _human_bytes(total_out),
             "series_ts": [p["ts"] for p in pts],
@@ -254,17 +268,21 @@ def _aggregate_by_port(rows: List[Dict[str, str]], top_n: int = 15,
                        ) -> List[dict]:
     """Aggregate connection traffic by port/service with time series."""
     from collections import defaultdict
-    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     series: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
         port = r.get("remote_port", "?")
         label = _port_label(port)
         b_in = int(r.get("bytes_in", 0) or 0)
         b_out = int(r.get("bytes_out", 0) or 0)
+        p_in = int(r.get("packets_in", 0) or 0)
+        p_out = int(r.get("packets_out", 0) or 0)
         retx = int(r.get("retransmits", 0) or 0)
         totals[label][0] += b_in
         totals[label][1] += b_out
-        totals[label][2] += retx
+        totals[label][2] += p_in
+        totals[label][3] += p_out
+        totals[label][4] += retx
         series[label].append({
             "ts": r.get("sample_ts", ""),
             "in": b_in, "out": b_out,
@@ -272,15 +290,18 @@ def _aggregate_by_port(rows: List[Dict[str, str]], top_n: int = 15,
     ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
                     reverse=True)[:top_n]
     result = []
-    for label, (total_in, total_out, total_retx) in ranked:
+    for label, (total_in, total_out, total_pin, total_pout, total_retx) in ranked:
         if total_in + total_out == 0:
             continue
+        total_pkts = total_pin + total_pout
         pts = series[label]
         result.append({
             "port": label,
             "bytes_in": total_in,
             "bytes_out": total_out,
+            "packets": total_pkts,
             "retransmits": total_retx,
+            "retx_pct": round(total_retx / (total_pout + total_retx) * 100, 2) if (total_pout + total_retx) else 0,
             "human_in": _human_bytes(total_in),
             "human_out": _human_bytes(total_out),
             "series_ts": [p["ts"] for p in pts],
@@ -626,10 +647,15 @@ function renderTrafficTable(containerId, title, items, nameField) {{
   h += '<th>Traffic over time</th></tr></thead><tbody>';
   items.forEach(function(item, i) {{
     var id = containerId + '-spark-' + i;
+    var retx = item.retransmits || 0;
+    var pct = item.retx_pct || 0;
+    var retxColor = pct > 2 ? '#e74c3c' : pct > 0.5 ? '#f39c12' : '#888';
+    var retxStr = retx === 0 ? '<span style="color:#666">-</span>'
+      : '<span style="color:' + retxColor + '">' + retx + ' (' + pct.toFixed(1) + '%)</span>';
     h += '<tr><td class="name" title="' + item[nameField] + '">' + item[nameField] + '</td>';
     h += '<td class="bytes">' + item.human_in + '</td>';
     h += '<td class="bytes">' + item.human_out + '</td>';
-    h += '<td class="retx">' + (item.retransmits || 0) + '</td>';
+    h += '<td class="retx">' + retxStr + '</td>';
     h += '<td class="spark"><div id="' + id + '"></div></td></tr>';
   }});
   h += '</tbody></table>';

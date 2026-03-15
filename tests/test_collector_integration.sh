@@ -186,10 +186,10 @@ assert_gt "main CSV: has samples" 2 "$data_lines"
 echo "  Collected $data_lines samples"
 
 traffic_header=$(head -1 "$traffic_csv")
-assert_eq "traffic CSV: correct header" "sample_ts,process,pid,bytes_in,bytes_out,rx_dupe,rx_ooo,retransmits" "$traffic_header"
+assert_eq "traffic CSV: correct header" "sample_ts,process,pid,bytes_in,bytes_out,packets_in,packets_out,rx_dupe,rx_ooo,retransmits" "$traffic_header"
 
 conn_header=$(head -1 "$conn_csv")
-assert_eq "connections CSV: correct header" "sample_ts,process,pid,remote_ip,remote_port,bytes_in,bytes_out,retransmits" "$conn_header"
+assert_eq "connections CSV: correct header" "sample_ts,process,pid,remote_ip,remote_port,bytes_in,bytes_out,packets_in,packets_out,retransmits" "$conn_header"
 
 scan_header=$(head -1 "$scan_csv")
 assert_eq "scan CSV: correct header" "scan_ts,ssid,bssid,rssi,channel,security" "$scan_header"

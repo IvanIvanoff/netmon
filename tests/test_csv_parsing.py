@@ -163,10 +163,16 @@ class TestParseTrafficTotals:
         # 1048576 + 1572864 = 2621440 bytes out
         assert chrome[1] == 1048576 + 1572864
 
+    def test_packets_summed(self, traffic_csv):
+        totals = parse_traffic_totals(traffic_csv)
+        spotify = totals["Spotify"]
+        assert spotify[2] == 1600 + 2400  # packets_in
+        assert spotify[3] == 400 + 600    # packets_out
+
     def test_retransmits_summed(self, traffic_csv):
         totals = parse_traffic_totals(traffic_csv)
         spotify = totals["Spotify"]
-        assert spotify[2] == 5 + 8  # retransmits
+        assert spotify[4] == 5 + 8  # retransmits
 
     def test_empty_file(self, empty_csv):
         assert parse_traffic_totals(empty_csv) == {}
@@ -187,7 +193,7 @@ class TestTopTrafficRows:
 
     def test_max_10_rows(self):
         # Create 15 fake processes
-        totals = {f"proc{i}": [i * 1000, i * 500, 0] for i in range(15)}
+        totals = {f"proc{i}": [i * 1000, i * 500, i * 10, i * 5, 0] for i in range(15)}
         rows = top_traffic_rows(totals)
         assert len(rows) == 10
 
@@ -209,10 +215,16 @@ class TestParseConnectionTotals:
         assert chrome_main[0] == 3145728 + 4194304  # bytes in
         assert chrome_main[1] == 786432 + 1048576  # bytes out
 
+    def test_packets(self, connections_csv):
+        totals = parse_connection_totals(connections_csv)
+        spotify = totals[("Spotify", "35.186.224.25")]
+        assert spotify[2] == 1600 + 2400  # packets_in
+        assert spotify[3] == 400 + 600    # packets_out
+
     def test_retransmits(self, connections_csv):
         totals = parse_connection_totals(connections_csv)
         spotify = totals[("Spotify", "35.186.224.25")]
-        assert spotify[2] == 5 + 8
+        assert spotify[4] == 5 + 8
 
 
 class TestTopConnectionRows:
@@ -260,38 +272,46 @@ class TestParseScanCsv:
 class TestSubtractTotals:
     def test_traffic_subtraction(self):
         current = {
-            "Chrome": [10000, 5000, 10],
-            "Slack": [3000, 1000, 0],
+            "Chrome": [10000, 5000, 100, 50, 10],
+            "Slack": [3000, 1000, 30, 10, 0],
         }
         baseline = {
-            "Chrome": [4000, 2000, 3],
-            "Slack": [3000, 1000, 0],  # no change → excluded
+            "Chrome": [4000, 2000, 40, 20, 3],
+            "Slack": [3000, 1000, 30, 10, 0],  # no change → excluded
         }
         result = subtract_traffic_totals(current, baseline)
         assert "Chrome" in result
-        assert result["Chrome"] == [6000, 3000, 7]
+        assert result["Chrome"] == [6000, 3000, 60, 30, 7]
         # Slack had no change, should not appear
         assert "Slack" not in result
 
     def test_negative_clamp(self):
-        current = {"proc": [100, 200, 0]}
-        baseline = {"proc": [500, 300, 5]}
+        current = {"proc": [100, 200, 10, 5, 0]}
+        baseline = {"proc": [500, 300, 20, 10, 5]}
         result = subtract_traffic_totals(current, baseline)
         # All deltas negative → clamped to 0 → excluded
         assert "proc" not in result
 
     def test_new_process(self):
-        current = {"new_proc": [1000, 500, 0]}
+        current = {"new_proc": [1000, 500, 10, 5, 0]}
         baseline = {}
         result = subtract_traffic_totals(current, baseline)
         assert "new_proc" in result
-        assert result["new_proc"] == [1000, 500, 0]
+        assert result["new_proc"] == [1000, 500, 10, 5, 0]
 
     def test_connection_subtraction(self):
-        current = {("Chrome", "1.2.3.4"): [10000, 5000, 2]}
-        baseline = {("Chrome", "1.2.3.4"): [4000, 2000, 1]}
+        current = {("Chrome", "1.2.3.4"): [10000, 5000, 100, 50, 2]}
+        baseline = {("Chrome", "1.2.3.4"): [4000, 2000, 40, 20, 1]}
         result = subtract_connection_totals(current, baseline)
-        assert result[("Chrome", "1.2.3.4")] == [6000, 3000, 1]
+        assert result[("Chrome", "1.2.3.4")] == [6000, 3000, 60, 30, 1]
+
+    def test_backward_compat_old_3_elem(self):
+        """Old-format 3-element lists should work (padded to 5)."""
+        current = {"proc": [1000, 500, 3]}
+        baseline = {}
+        result = subtract_traffic_totals(current, baseline)
+        # Old [bytes_in, bytes_out, retx] pads to [1000, 500, 3, 0, 0]
+        assert result["proc"] == [1000, 500, 3, 0, 0]
 
 
 # ---------------------------------------------------------------------------

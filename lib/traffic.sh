@@ -6,9 +6,9 @@ _NETMON_TRAFFIC_LOADED=1
 [[ -n "${_NETMON_CONFIG_LOADED:-}" ]] || source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 _nettop_snapshot() {
-  # Raw nettop snapshot: process.pid,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx
-  nettop -P -L 1 -n -x -J time,bytes_in,bytes_out,rx_dupe,rx_ooo,re-tx 2>/dev/null |
-    awk -F, 'NR > 1 && ($3 + 0 > 0 || $4 + 0 > 0) { print $2 "," $3 "," $4 "," $5 "," $6 "," $7 }'
+  # Raw nettop snapshot: process.pid,bytes_in,bytes_out,packets_in,packets_out,rx_dupe,rx_ooo,re-tx
+  nettop -P -L 1 -n -x -J time,packets_in,bytes_in,packets_out,bytes_out,rx_dupe,rx_ooo,re-tx 2>/dev/null |
+    awk -F, 'NR > 1 && ($4 + 0 > 0 || $6 + 0 > 0) { print $2 "," $4 "," $6 "," $3 "," $5 "," $7 "," $8 "," $9 }'
 }
 
 _nettop_udp_snapshot() {
@@ -17,13 +17,13 @@ _nettop_udp_snapshot() {
 }
 
 _nettop_conn_snapshot() {
-  nettop -m tcp -L 1 -n -x 2>/dev/null | awk -F, '
+  nettop -m tcp -L 1 -n -x -J time,packets_in,bytes_in,packets_out,bytes_out,rx_dupe,rx_ooo,re-tx 2>/dev/null | awk -F, '
     NR == 1 { next }
-    $3 == "" && $2 ~ /\.[0-9]+$/ { proc = $2; next }
-    $2 ~ /<->/ && ($5 + 0 > 0 || $6 + 0 > 0) {
+    $2 !~ /<->/ && $2 ~ /\.[0-9]+$/ { proc = $2; next }
+    $2 ~ /<->/ && ($4 + 0 > 0 || $6 + 0 > 0) {
       flow = $2
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", flow)
-      print proc "|" flow "," $5 "," $6 "," $9
+      print proc "|" flow "," $4 "," $6 "," $3 "," $5 "," $9
     }
   '
 }
@@ -83,13 +83,14 @@ capture_traffic() {
   if [[ -s "$prev_file" ]]; then
     awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
       FILENAME == ARGV[1] { fullname[$1] = $2; next }
-      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4 FS $5 FS $6; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4 FS $5 FS $6 FS $7 FS $8; next }
       {
         split(prev[$1], pv, FS)
         din = clamp($2 - pv[1]); dout = clamp($3 - pv[2])
         if (din > 0 || dout > 0) {
-          ddup = clamp($4 - pv[3]); dooo = clamp($5 - pv[4]); dretx = clamp($6 - pv[5])
-          printf "%s,%s,%s,%d,%d,%d,%d,%d\n", ts, resolve_proc($1, fullname), resolve_pid($1), din, dout, ddup, dooo, dretx
+          dpin = clamp($4 - pv[3]); dpout = clamp($5 - pv[4])
+          ddup = clamp($6 - pv[5]); dooo = clamp($7 - pv[6]); dretx = clamp($8 - pv[7])
+          printf "%s,%s,%s,%d,%d,%d,%d,%d,%d,%d\n", ts, resolve_proc($1, fullname), resolve_pid($1), din, dout, dpin, dpout, ddup, dooo, dretx
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$traffic_file"
@@ -106,18 +107,19 @@ capture_connections() {
   if [[ -s "$prev_file" ]]; then
     awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
       FILENAME == ARGV[1] { fullname[$1] = $2; next }
-      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4 FS $5 FS $6; next }
       {
         split(prev[$1], pv, FS)
-        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2]); dretx = clamp($4 - pv[3])
+        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2])
         if (din > 0 || dout > 0) {
+          dpin = clamp($4 - pv[3]); dpout = clamp($5 - pv[4]); dretx = clamp($6 - pv[5])
           split($1, kp, "|"); proc_raw = kp[1]; flow = kp[2]
           split(flow, lr, "<->")
           remote = (length(lr[2]) > 0 ? lr[2] : flow)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", remote)
           n = split(remote, rp, ":"); rport = rp[n]; rip = rp[1]
           for (i = 2; i < n; i++) rip = rip ":" rp[i]
-          printf "%s,%s,%s,%s,%s,%d,%d,%d\n", ts, resolve_proc(proc_raw, fullname), resolve_pid(proc_raw), rip, rport, din, dout, dretx
+          printf "%s,%s,%s,%s,%s,%d,%d,%d,%d,%d\n", ts, resolve_proc(proc_raw, fullname), resolve_pid(proc_raw), rip, rport, din, dout, dpin, dpout, dretx
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$conn_file"

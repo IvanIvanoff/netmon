@@ -203,7 +203,7 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
 def parse_traffic_totals(path: Path) -> Dict[str, List[int]]:
     if not path.exists():
         return {}
-    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     try:
         with path.open(newline="") as f:
             reader = csv.DictReader(f)
@@ -211,14 +211,19 @@ def parse_traffic_totals(path: Path) -> Dict[str, List[int]]:
                 proc = row.get("process", "") or "unknown"
                 totals[proc][0] += to_int(row.get("bytes_in", "0"))
                 totals[proc][1] += to_int(row.get("bytes_out", "0"))
-                totals[proc][2] += to_int(row.get("retransmits", "0"))
+                totals[proc][2] += to_int(row.get("packets_in", "0"))
+                totals[proc][3] += to_int(row.get("packets_out", "0"))
+                totals[proc][4] += to_int(row.get("retransmits", "0"))
     except Exception:
         return {}
     return totals
 
 
-def top_traffic_rows(totals: Dict[str, List[int]]) -> List[Tuple[str, int, int, int]]:
-    items = [(proc, vals[0], vals[1], vals[2]) for proc, vals in totals.items()]
+def top_traffic_rows(totals: Dict[str, List[int]]) -> List[Tuple[str, int, int, int, int, int]]:
+    items = []
+    for proc, vals in totals.items():
+        v = _pad5(list(vals))
+        items.append((proc, v[0], v[1], v[2], v[3], v[4]))
     items.sort(key=lambda x: x[1] + x[2], reverse=True)
     return items[:10]
 
@@ -226,7 +231,7 @@ def top_traffic_rows(totals: Dict[str, List[int]]) -> List[Tuple[str, int, int, 
 def parse_connection_totals(path: Path) -> Dict[Tuple[str, str], List[int]]:
     if not path.exists():
         return {}
-    totals: Dict[Tuple[str, str], List[int]] = defaultdict(lambda: [0, 0, 0])
+    totals: Dict[Tuple[str, str], List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     try:
         with path.open(newline="") as f:
             reader = csv.DictReader(f)
@@ -236,14 +241,19 @@ def parse_connection_totals(path: Path) -> Dict[Tuple[str, str], List[int]]:
                 key = (proc, remote)
                 totals[key][0] += to_int(row.get("bytes_in", "0"))
                 totals[key][1] += to_int(row.get("bytes_out", "0"))
-                totals[key][2] += to_int(row.get("retransmits", "0"))
+                totals[key][2] += to_int(row.get("packets_in", "0"))
+                totals[key][3] += to_int(row.get("packets_out", "0"))
+                totals[key][4] += to_int(row.get("retransmits", "0"))
     except Exception:
         return {}
     return totals
 
 
-def top_connection_rows(totals: Dict[Tuple[str, str], List[int]]) -> List[Tuple[str, str, int, int, int]]:
-    items = [(proc, remote, vals[0], vals[1], vals[2]) for (proc, remote), vals in totals.items()]
+def top_connection_rows(totals: Dict[Tuple[str, str], List[int]]) -> List[Tuple[str, str, int, int, int, int, int]]:
+    items = []
+    for (proc, remote), vals in totals.items():
+        v = _pad5(list(vals))
+        items.append((proc, remote, v[0], v[1], v[2], v[3], v[4]))
     items.sort(key=lambda x: x[2] + x[3], reverse=True)
     return items[:10]
 
@@ -302,17 +312,27 @@ def parse_scan_csv(path: Path) -> List[Dict[str, str]]:
     return rows
 
 
+def _pad5(vals: List[int]) -> List[int]:
+    """Ensure a totals list has 5 elements (backward compat with old 3-elem)."""
+    while len(vals) < 5:
+        vals.append(0)
+    return vals
+
+
 def subtract_traffic_totals(
     current: Dict[str, List[int]], baseline: Dict[str, List[int]]
 ) -> Dict[str, List[int]]:
     out: Dict[str, List[int]] = {}
     for proc, curr_vals in current.items():
-        base_vals = baseline.get(proc, [0, 0, 0])
-        recv = max(0, curr_vals[0] - base_vals[0])
-        sent = max(0, curr_vals[1] - base_vals[1])
-        retx = max(0, curr_vals[2] - base_vals[2])
+        c = _pad5(list(curr_vals))
+        b = _pad5(list(baseline.get(proc, [0, 0, 0, 0, 0])))
+        recv = max(0, c[0] - b[0])
+        sent = max(0, c[1] - b[1])
+        pkts_in = max(0, c[2] - b[2])
+        pkts_out = max(0, c[3] - b[3])
+        retx = max(0, c[4] - b[4])
         if recv > 0 or sent > 0 or retx > 0:
-            out[proc] = [recv, sent, retx]
+            out[proc] = [recv, sent, pkts_in, pkts_out, retx]
     return out
 
 
@@ -321,12 +341,15 @@ def subtract_connection_totals(
 ) -> Dict[Tuple[str, str], List[int]]:
     out: Dict[Tuple[str, str], List[int]] = {}
     for key, curr_vals in current.items():
-        base_vals = baseline.get(key, [0, 0, 0])
-        recv = max(0, curr_vals[0] - base_vals[0])
-        sent = max(0, curr_vals[1] - base_vals[1])
-        retx = max(0, curr_vals[2] - base_vals[2])
+        c = _pad5(list(curr_vals))
+        b = _pad5(list(baseline.get(key, [0, 0, 0, 0, 0])))
+        recv = max(0, c[0] - b[0])
+        sent = max(0, c[1] - b[1])
+        pkts_in = max(0, c[2] - b[2])
+        pkts_out = max(0, c[3] - b[3])
+        retx = max(0, c[4] - b[4])
         if recv > 0 or sent > 0 or retx > 0:
-            out[key] = [recv, sent, retx]
+            out[key] = [recv, sent, pkts_in, pkts_out, retx]
     return out
 
 
@@ -790,14 +813,14 @@ def draw_dashboard(
     # Row 17+: bottom row (Diagnostics | WiFi Environment)
 
     gap = 1
-    col3_w = (w - 2 * gap) // 3
-    col3_extra = w - 2 * gap - 3 * col3_w
+    usable = w - 2 * gap
+    c1_w = max(30, usable // 4)
+    remaining = usable - c1_w
+    c2_w = remaining // 2
+    c3_w = remaining - c2_w
     c1_x = 0
-    c1_w = col3_w
-    c2_x = col3_w + gap
-    c2_w = col3_w
-    c3_x = 2 * (col3_w + gap)
-    c3_w = col3_w + col3_extra
+    c2_x = c1_w + gap
+    c3_x = c1_w + gap + c2_w + gap
 
     half_w_left = (w - gap) // 2
     half_w_right = w - gap - half_w_left
@@ -825,8 +848,8 @@ def draw_dashboard(
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 0, "Collector", status_txt, theme, status_attr)
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 1, "Samples", str(main["samples"]), theme, theme["text"])
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 2, "Duration", duration, theme, theme["text"])
-    box_kv(stdscr, top_y, c1_x, top_h, c1_w, 3, "Period",
-           f"{main['first_ts']} -> {main['last_ts']}", theme, theme["text"])
+    box_kv(stdscr, top_y, c1_x, top_h, c1_w, 3, "Started",
+           str(main["first_ts"]), theme, theme["text"])
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 4, "Refresh", f"{refresh_sec:.1f}s", theme, theme["text"])
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 5, "Updated", updated_at, theme, theme["text"])
     box_kv(stdscr, top_y, c1_x, top_h, c1_w, 6, "Interface",
@@ -895,9 +918,9 @@ def draw_dashboard(
            roam_txt, theme, theme["warn"] if bssid_count > 1 else theme["ok"]); r += 1
 
     # ===== MID ROW: System | Processes | Connections =====
-    sys_w = col3_w
-    proc_w = col3_w
-    conn_w = col3_w + col3_extra
+    sys_w = c1_w
+    proc_w = c2_w
+    conn_w = c3_w
 
     draw_box(stdscr, mid_y, c1_x, mid_h, sys_w, "System / Gateway", theme)
     draw_box(stdscr, mid_y, c2_x, mid_h, proc_w, "Top Processes", theme)
@@ -927,22 +950,26 @@ def draw_dashboard(
            f"{int(total_ierrs)} in / {int(total_oerrs)} out", theme, err_style); r += 1
 
     # -- Processes box (TCP + UDP) --
-    # Compute session duration for rate-based retransmit thresholds
-    _session_minutes = 1.0
-    try:
-        from datetime import datetime as _dt
-        _t0 = _dt.strptime(str(main["first_ts"]), "%Y-%m-%d %H:%M:%S")
-        _t1 = _dt.strptime(str(main["last_ts"]), "%Y-%m-%d %H:%M:%S")
-        _session_minutes = max(1.0, (_t1 - _t0).total_seconds() / 60.0)
-    except (ValueError, KeyError):
-        pass
-    # Warn if retransmit rate exceeds 10/min
-    _retx_warn = int(10 * _session_minutes)
+    def _retx_pct(retx: int, pkts_out: int) -> float:
+        """Retransmit % of total wire segments (pkts_out excludes retx)."""
+        total = pkts_out + retx
+        return (retx / total * 100) if total > 0 else 0.0
+
+    def _retx_attr(retx: int, pkts_out: int) -> int:
+        """Color retransmits by % of wire packets: >2% bad, >0.5% warn."""
+        if retx == 0:
+            return theme["text"]
+        pct = _retx_pct(retx, pkts_out)
+        if pct > 2:
+            return theme["bad"]
+        if pct > 0.5:
+            return theme["warn"]
+        return theme["text"]
 
     proc_inner_w = max(1, proc_w - 2)
     recv_w = 9
     sent_w = 9
-    retx_w = 6
+    retx_w = 14
     pname_w = max(8, proc_inner_w - (recv_w + sent_w + retx_w + 9))
     max_proc_rows = max(0, mid_h - 3)
     row_idx = 0
@@ -956,12 +983,17 @@ def draw_dashboard(
     row_idx += 1
     # Reserve space for UDP: label + header + at least 1 row = 3 rows
     tcp_limit = min(len(traffic), max(1, max_proc_rows - row_idx - 3)) if udp_traffic else max_proc_rows - row_idx
-    for proc, recv, sent, retx in traffic[:tcp_limit]:
+    for proc, recv, sent, pkts_in, pkts_out, retx in traffic[:tcp_limit]:
         if row_idx >= max_proc_rows:
             break
-        retx_str = "-" if retx == 0 else str(retx)
+        if retx == 0:
+            retx_str = "-"
+        elif pkts_out + retx > 0:
+            retx_str = f"{retx} ({_retx_pct(retx, pkts_out):.1f}%)"
+        else:
+            retx_str = str(retx)
         line = f"{proc[:pname_w]:<{pname_w}} | {human_bytes(recv):>{recv_w}} | {human_bytes(sent):>{sent_w}} | {retx_str:>{retx_w}}"
-        row_attr = theme["warn"] if retx > _retx_warn else theme["text"]
+        row_attr = _retx_attr(retx, pkts_out)
         box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, line, row_attr)
         row_idx += 1
 
@@ -984,7 +1016,7 @@ def draw_dashboard(
     conn_inner_w = max(1, conn_w - 2)
     cr_w = 9
     cs_w = 9
-    ct_w = 6
+    ct_w = 14
     dynamic_w = max(16, conn_inner_w - (cr_w + cs_w + ct_w + 12))
     cp_w = max(8, dynamic_w // 2)
     crm_w = max(8, dynamic_w - cp_w)
@@ -994,13 +1026,18 @@ def draw_dashboard(
     )
     box_write(stdscr, mid_y, c3_x, mid_h, conn_w, 0, conn_header, theme["header"])
     max_conn_rows = max(0, mid_h - 3)
-    for i, (proc, remote, recv, sent, retx) in enumerate(connections[:max_conn_rows], start=1):
-        retx_str = "-" if retx == 0 else str(retx)
+    for i, (proc, remote, recv, sent, pkts_in, pkts_out, retx) in enumerate(connections[:max_conn_rows], start=1):
+        if retx == 0:
+            retx_str = "-"
+        elif pkts_out + retx > 0:
+            retx_str = f"{retx} ({_retx_pct(retx, pkts_out):.1f}%)"
+        else:
+            retx_str = str(retx)
         line = (
             f"{proc[:cp_w]:<{cp_w}} | {remote[:crm_w]:<{crm_w}} | "
             f"{human_bytes(recv):>{cr_w}} | {human_bytes(sent):>{cs_w}} | {retx_str:>{ct_w}}"
         )
-        row_attr = theme["warn"] if retx > _retx_warn else theme["text"]
+        row_attr = _retx_attr(retx, pkts_out)
         box_write(stdscr, mid_y, c3_x, mid_h, conn_w, i, line, row_attr)
 
     # ===== BOTTOM ROW: Diagnostics | WiFi Environment =====
