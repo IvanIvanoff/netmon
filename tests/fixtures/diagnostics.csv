@@ -1,0 +1,7 @@
+timestamp,severity,message
+2025-01-15 10:00:05,warn,Weak WiFi signal: -70 dBm
+2025-01-15 10:00:15,bad,High latency: 120 ms avg (last 5)
+2025-01-15 10:00:25,resolved,Weak WiFi signal: -70 dBm
+2025-01-15 10:00:25,warn,Packet loss detected: 2.0% avg recent
+2025-01-15 10:00:35,resolved,High latency: 120 ms avg (last 5)
+2025-01-15 10:00:45,info,AP roaming detected: 2 different BSSIDs

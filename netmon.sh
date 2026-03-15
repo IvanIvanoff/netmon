@@ -282,6 +282,11 @@ review)
 list)
   cmd_list
   ;;
+chart)
+  shift
+  has_cmd python3 || die "python3 is required for chart generation."
+  python3 "$SCRIPT_DIR/netmon_chart.py" --log-dir "$LOG_DIR" "$@"
+  ;;
 help | *)
   echo "netmon.sh - log network conditions during calls"
   echo
@@ -292,6 +297,7 @@ help | *)
   echo "  $0 measure         Measure interface throughput for a time window"
   echo "  $0 review [file]   Review latest (or specified) log"
   echo "  $0 list            List all log files"
+  echo "  $0 chart           Open interactive diagnostics timeline in browser"
   echo
   echo "Monitor options:"
   echo "  $0 monitor --attach       Attach to existing collector only"

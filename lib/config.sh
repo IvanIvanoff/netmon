@@ -25,4 +25,5 @@ TRAFFIC_CSV_HEADER="sample_ts,process,pid,bytes_in,bytes_out,rx_dupe,rx_ooo,retr
 CONNECTIONS_CSV_HEADER="sample_ts,process,pid,remote_ip,remote_port,bytes_in,bytes_out,retransmits"
 SCAN_CSV_HEADER="scan_ts,ssid,bssid,rssi,channel,security"
 UDP_CSV_HEADER="sample_ts,process,pid,bytes_in,bytes_out"
+DIAG_CSV_HEADER="timestamp,severity,message"
 SCAN_INTERVAL=15  # run wifi scan every N sample cycles

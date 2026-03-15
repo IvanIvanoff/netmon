@@ -57,6 +57,11 @@ def udp_csv(fixtures_dir):
 
 
 @pytest.fixture
+def diag_csv(fixtures_dir):
+    return fixtures_dir / "diagnostics.csv"
+
+
+@pytest.fixture
 def empty_csv(tmp_path):
     f = tmp_path / "empty.csv"
     f.write_text("")

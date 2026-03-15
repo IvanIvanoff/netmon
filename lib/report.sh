@@ -483,6 +483,7 @@ cmd_list() {
     [[ "$file" == *-connections.csv ]] && continue
     [[ "$file" == *-scan.csv ]] && continue
     [[ "$file" == *-udp.csv ]] && continue
+    [[ "$file" == *-diagnostics.csv ]] && continue
     found=1
     size=$(wc -c <"$file" | tr -d " ")
     mtime=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$file" 2>/dev/null || echo "unknown-time")

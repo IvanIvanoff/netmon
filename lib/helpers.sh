@@ -73,6 +73,7 @@ latest_main_log() {
     [[ "$file" == *-connections.csv ]] && continue
     [[ "$file" == *-scan.csv ]] && continue
     [[ "$file" == *-udp.csv ]] && continue
+    [[ "$file" == *-diagnostics.csv ]] && continue
     [[ -z "$latest" || "$file" -nt "$latest" ]] && latest="$file"
   done
   shopt -u nullglob

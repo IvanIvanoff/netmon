@@ -120,7 +120,7 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     candidates = []
     for path in log_dir.glob("call-*.csv"):
         name = path.name
-        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv", "-udp.csv")):
+        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv", "-udp.csv", "-diagnostics.csv")):
             continue
         candidates.append(path)
     if not candidates:
@@ -129,11 +129,12 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     return candidates[0]
 
 
-def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path]:
+def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path, Path]:
     stem = str(main_file)
     base = stem[:-4] if stem.endswith(".csv") else stem
     return (Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"),
-            Path(f"{base}-scan.csv"), Path(f"{base}-udp.csv"))
+            Path(f"{base}-scan.csv"), Path(f"{base}-udp.csv"),
+            Path(f"{base}-diagnostics.csv"))
 
 
 def collector_status(pid_file: Optional[Path]) -> Tuple[bool, Optional[int]]:
@@ -574,6 +575,52 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
 
 
 # ---------------------------------------------------------------------------
+# Diagnostics logging
+# ---------------------------------------------------------------------------
+
+DIAG_CSV_HEADER = "timestamp,severity,message"
+
+
+def log_diagnostics(
+    diag_file: Path,
+    diag: List[Tuple[str, str]],
+    prev_msgs: set,
+) -> set:
+    """Append new diagnostic entries to the diagnostics CSV.
+
+    Only logs entries whose (severity, message) pair wasn't in prev_msgs,
+    so repeated diagnostics across refresh cycles don't flood the file.
+    When a diagnostic disappears, the next time it reappears it will be
+    logged again — giving a clear timeline of when issues come and go.
+
+    Returns the current set of (severity, message) tuples for the next cycle.
+    """
+    current_msgs = {(sev, msg) for sev, msg in diag if sev != "ok"}
+    new_msgs = current_msgs - prev_msgs
+    gone_msgs = prev_msgs - current_msgs
+
+    if not new_msgs and not gone_msgs:
+        return current_msgs
+
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    write_header = not diag_file.exists() or diag_file.stat().st_size == 0
+
+    try:
+        with open(diag_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(DIAG_CSV_HEADER.split(","))
+            for sev, msg in sorted(gone_msgs):
+                writer.writerow([ts, "resolved", msg])
+            for sev, msg in sorted(new_msgs):
+                writer.writerow([ts, sev, msg])
+    except OSError:
+        pass  # never crash the TUI over logging
+
+    return current_msgs
+
+
+# ---------------------------------------------------------------------------
 # Curses helpers
 # ---------------------------------------------------------------------------
 
@@ -717,8 +764,8 @@ def draw_dashboard(
     traffic_baseline: Dict[str, List[int]],
     conn_baseline: Dict[Tuple[str, str], List[int]],
     udp_baseline: Optional[Dict[str, List[int]]] = None,
-) -> None:
-    traffic_file, conn_file, scan_file, udp_file = resolve_related(main_file)
+) -> List[Tuple[str, str]]:
+    traffic_file, conn_file, scan_file, udp_file, _diag_file = resolve_related(main_file)
     main = parse_main_csv(main_file)
     traffic = top_traffic_rows(
         subtract_traffic_totals(parse_traffic_totals(traffic_file), traffic_baseline)
@@ -741,7 +788,7 @@ def draw_dashboard(
         safe_add(stdscr, 1, 0, f"Need at least 120x24, have {w}x{h}.", theme["warn"])
         safe_add(stdscr, 3, 0, "q=quit  r=reload latest", theme["dim"])
         stdscr.refresh()
-        return
+        return diag
 
     latest = main.get("latest", {}) or {}
 
@@ -1065,6 +1112,7 @@ def draw_dashboard(
                       "Waiting for first scan (~30s)...", theme["dim"])
 
     stdscr.refresh()
+    return diag
 
 
 # ---------------------------------------------------------------------------
@@ -1097,13 +1145,14 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     assert main_file is not None
 
-    traffic_file, conn_file, _scan_file, udp_file = resolve_related(main_file)
+    traffic_file, conn_file, _scan_file, udp_file, diag_file = resolve_related(main_file)
     traffic_baseline = parse_traffic_totals(traffic_file)
     conn_baseline = parse_connection_totals(conn_file)
     udp_baseline = parse_udp_totals(udp_file)
+    prev_diag_msgs: set = set()
 
     while True:
-        draw_dashboard(
+        diag = draw_dashboard(
             stdscr,
             main_file,
             pid_file,
@@ -1114,6 +1163,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             conn_baseline,
             udp_baseline,
         )
+        prev_diag_msgs = log_diagnostics(diag_file, diag, prev_diag_msgs)
         key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
             return 0
@@ -1121,10 +1171,11 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             latest = latest_main_log(log_dir)
             if latest is not None:
                 main_file = latest
-                traffic_file, conn_file, _scan_file, udp_file = resolve_related(main_file)
+                traffic_file, conn_file, _scan_file, udp_file, diag_file = resolve_related(main_file)
                 traffic_baseline = parse_traffic_totals(traffic_file)
                 conn_baseline = parse_connection_totals(conn_file)
                 udp_baseline = parse_udp_totals(udp_file)
+                prev_diag_msgs = set()
 
 
 def main() -> int:
