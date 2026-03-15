@@ -131,10 +131,12 @@ fi
 traffic_csv="${main_csv%.csv}-traffic.csv"
 conn_csv="${main_csv%.csv}-connections.csv"
 scan_csv="${main_csv%.csv}-scan.csv"
+udp_csv="${main_csv%.csv}-udp.csv"
 
 assert_true "traffic CSV exists" "$([[ -f "$traffic_csv" ]] && echo true || echo false)"
 assert_true "connections CSV exists" "$([[ -f "$conn_csv" ]] && echo true || echo false)"
 assert_true "scan CSV exists" "$([[ -f "$scan_csv" ]] && echo true || echo false)"
+assert_true "UDP CSV exists" "$([[ -f "$udp_csv" ]] && echo true || echo false)"
 
 # Stop collector
 LOG_DIR="$TEST_LOG_DIR" "$NETMON" stop >"$OUT_FILE" 2>&1
@@ -190,6 +192,9 @@ assert_eq "connections CSV: correct header" "sample_ts,process,pid,remote_ip,rem
 
 scan_header=$(head -1 "$scan_csv")
 assert_eq "scan CSV: correct header" "scan_ts,ssid,bssid,rssi,channel,security" "$scan_header"
+
+udp_header=$(head -1 "$udp_csv")
+assert_eq "UDP CSV: correct header" "sample_ts,process,pid,bytes_in,bytes_out" "$udp_header"
 
 # ===================================================================
 # Test: data quality in main CSV

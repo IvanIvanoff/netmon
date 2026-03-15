@@ -11,6 +11,12 @@ _nettop_snapshot() {
     awk -F, 'NR > 1 && ($3 + 0 > 0 || $4 + 0 > 0) { print $2 "," $3 "," $4 "," $5 "," $6 "," $7 }'
 }
 
+_nettop_udp_snapshot() {
+  # UDP traffic snapshot: process.pid,bytes_in,bytes_out
+  nettop -m udp -P -L 1 -n -x -J time,bytes_in,bytes_out 2>/dev/null |
+    awk -F, 'NR > 1 && ($3 + 0 > 0 || $4 + 0 > 0) { print $2 "," $3 "," $4 }'
+}
+
 _nettop_conn_snapshot() {
   # Connection-level snapshot:
   #   process.pid|local_ip:port<->remote_ip:port,bytes_in,bytes_out,retransmits
@@ -127,6 +133,35 @@ capture_connections() {
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$conn_file"
+  fi
+
+  cp "$curr_file" "$prev_file"
+}
+
+capture_udp_traffic() {
+  local ts="$1" udp_file="$2" prev_file="$3" curr_file="$4" name_file="$5"
+
+  _nettop_udp_snapshot >"$curr_file"
+
+  if [[ -s "$prev_file" ]]; then
+    awk -F, -v ts="$ts" '
+      FILENAME == ARGV[1] { fullname[$1] = $2; next }
+      FILENAME == ARGV[2] { prev_in[$1]=$2; prev_out[$1]=$3; next }
+      {
+        din = $2 - (prev_in[$1] + 0); if (din < 0) din = 0
+        dout = $3 - (prev_out[$1] + 0); if (dout < 0) dout = 0
+        if (din > 0 || dout > 0) {
+          proc = $1; pid = ""
+          n = split(proc, p, ".")
+          if (n > 1 && p[n] ~ /^[0-9]+$/) {
+            pid = p[n]; proc = p[1]
+            for (i = 2; i < n; i++) proc = proc "." p[i]
+          }
+          if (pid != "" && pid in fullname) proc = fullname[pid]
+          printf "%s,%s,%s,%d,%d\n", ts, proc, pid, din, dout
+        }
+      }
+    ' "$name_file" "$prev_file" "$curr_file" >>"$udp_file"
   fi
 
   cp "$curr_file" "$prev_file"

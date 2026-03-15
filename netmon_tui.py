@@ -129,10 +129,11 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     return candidates[0]
 
 
-def resolve_related(main_file: Path) -> Tuple[Path, Path, Path]:
+def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path]:
     stem = str(main_file)
     base = stem[:-4] if stem.endswith(".csv") else stem
-    return Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"), Path(f"{base}-scan.csv")
+    return (Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"),
+            Path(f"{base}-scan.csv"), Path(f"{base}-udp.csv"))
 
 
 def collector_status(pid_file: Optional[Path]) -> Tuple[bool, Optional[int]]:
@@ -274,6 +275,40 @@ def top_connection_rows(totals: Dict[Tuple[str, str], List[int]]) -> List[Tuple[
     items = [(proc, remote, vals[0], vals[1], vals[2]) for (proc, remote), vals in totals.items()]
     items.sort(key=lambda x: x[2] + x[3], reverse=True)
     return items[:10]
+
+
+def parse_udp_totals(path: Path) -> Dict[str, List[int]]:
+    if not path.exists():
+        return {}
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
+    try:
+        with path.open(newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                proc = row.get("process", "") or "unknown"
+                totals[proc][0] += to_int(row.get("bytes_in", "0"))
+                totals[proc][1] += to_int(row.get("bytes_out", "0"))
+    except Exception:
+        return {}
+    return totals
+
+
+def top_udp_rows(totals: Dict[str, List[int]]) -> List[Tuple[str, int, int]]:
+    items = [(proc, vals[0], vals[1]) for proc, vals in totals.items()]
+    items.sort(key=lambda x: x[1] + x[2], reverse=True)
+    return items[:10]
+
+
+def subtract_udp_totals(
+    current: Dict[str, List[int]], baseline: Dict[str, List[int]]
+) -> Dict[str, List[int]]:
+    out: Dict[str, List[int]] = {}
+    for proc, curr_vals in current.items():
+        base_vals = baseline.get(proc, [0, 0])
+        diff = [max(0, c - b) for c, b in zip(curr_vals, base_vals)]
+        if diff[0] > 0 or diff[1] > 0:
+            out[proc] = diff
+    return out
 
 
 def parse_scan_csv(path: Path) -> List[Dict[str, str]]:
@@ -660,14 +695,18 @@ def draw_dashboard(
     theme: Dict[str, int],
     traffic_baseline: Dict[str, List[int]],
     conn_baseline: Dict[Tuple[str, str], List[int]],
+    udp_baseline: Optional[Dict[str, List[int]]] = None,
 ) -> None:
-    traffic_file, conn_file, scan_file = resolve_related(main_file)
+    traffic_file, conn_file, scan_file, udp_file = resolve_related(main_file)
     main = parse_main_csv(main_file)
     traffic = top_traffic_rows(
         subtract_traffic_totals(parse_traffic_totals(traffic_file), traffic_baseline)
     )
     connections = top_connection_rows(
         subtract_connection_totals(parse_connection_totals(conn_file), conn_baseline)
+    )
+    udp_traffic = top_udp_rows(
+        subtract_udp_totals(parse_udp_totals(udp_file), udp_baseline or {})
     )
     scan_rows = parse_scan_csv(scan_file)
     running, pid = collector_status(pid_file)
@@ -858,20 +897,47 @@ def draw_dashboard(
     box_kv(stdscr, mid_y, c1_x, mid_h, sys_w, r, "IF errors",
            f"{int(total_ierrs)} in / {int(total_oerrs)} out", theme, err_style); r += 1
 
-    # -- Processes box --
+    # -- Processes box (TCP + UDP) --
     proc_inner_w = max(1, proc_w - 2)
     recv_w = 9
     sent_w = 9
     retx_w = 6
     pname_w = max(8, proc_inner_w - (recv_w + sent_w + retx_w + 9))
-    proc_header = f"{'Process':<{pname_w}} | {'Recv':>{recv_w}} | {'Sent':>{sent_w}} | {'ReTX':>{retx_w}}"
-    box_write(stdscr, mid_y, c2_x, mid_h, proc_w, 0, proc_header, theme["header"])
     max_proc_rows = max(0, mid_h - 3)
-    for i, (proc, recv, sent, retx) in enumerate(traffic[:max_proc_rows], start=1):
+    row_idx = 0
+
+    # TCP section
+    tcp_label = f"{' TCP ':-^{proc_inner_w}}"
+    box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, tcp_label, theme["header"])
+    row_idx += 1
+    tcp_hdr = f"{'Process':<{pname_w}} | {'Recv':>{recv_w}} | {'Sent':>{sent_w}} | {'ReTX':>{retx_w}}"
+    box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, tcp_hdr, theme["dim"])
+    row_idx += 1
+    # Reserve space for UDP: label + header + at least 1 row = 3 rows
+    tcp_limit = min(len(traffic), max(1, max_proc_rows - row_idx - 3)) if udp_traffic else max_proc_rows - row_idx
+    for proc, recv, sent, retx in traffic[:tcp_limit]:
+        if row_idx >= max_proc_rows:
+            break
         retx_str = "-" if retx == 0 else str(retx)
         line = f"{proc[:pname_w]:<{pname_w}} | {human_bytes(recv):>{recv_w}} | {human_bytes(sent):>{sent_w}} | {retx_str:>{retx_w}}"
         row_attr = theme["warn"] if retx > 100 else theme["text"]
-        box_write(stdscr, mid_y, c2_x, mid_h, proc_w, i, line, row_attr)
+        box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, line, row_attr)
+        row_idx += 1
+
+    # UDP section
+    if udp_traffic and row_idx < max_proc_rows - 1:
+        udp_label = f"{' UDP ':-^{proc_inner_w}}"
+        box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, udp_label, theme["header"])
+        row_idx += 1
+        udp_hdr = f"{'Process':<{pname_w}} | {'Recv':>{recv_w}} | {'Sent':>{sent_w}} |"
+        box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, udp_hdr, theme["dim"])
+        row_idx += 1
+        for proc, recv, sent in udp_traffic:
+            if row_idx >= max_proc_rows:
+                break
+            line = f"{proc[:pname_w]:<{pname_w}} | {human_bytes(recv):>{recv_w}} | {human_bytes(sent):>{sent_w}} |"
+            box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, line, theme["text"])
+            row_idx += 1
 
     # -- Connections box --
     conn_inner_w = max(1, conn_w - 2)
@@ -1010,9 +1076,10 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     assert main_file is not None
 
-    traffic_file, conn_file, _scan_file = resolve_related(main_file)
+    traffic_file, conn_file, _scan_file, udp_file = resolve_related(main_file)
     traffic_baseline = parse_traffic_totals(traffic_file)
     conn_baseline = parse_connection_totals(conn_file)
+    udp_baseline = parse_udp_totals(udp_file)
 
     while True:
         draw_dashboard(
@@ -1024,6 +1091,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             theme,
             traffic_baseline,
             conn_baseline,
+            udp_baseline,
         )
         key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
@@ -1032,9 +1100,10 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             latest = latest_main_log(log_dir)
             if latest is not None:
                 main_file = latest
-                traffic_file, conn_file, _scan_file = resolve_related(main_file)
+                traffic_file, conn_file, _scan_file, udp_file = resolve_related(main_file)
                 traffic_baseline = parse_traffic_totals(traffic_file)
                 conn_baseline = parse_connection_totals(conn_file)
+                udp_baseline = parse_udp_totals(udp_file)
 
 
 def main() -> int:

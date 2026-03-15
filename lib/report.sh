@@ -254,6 +254,40 @@ cmd_review() {
     echo
   fi
 
+  # UDP Traffic
+  local udp_file="${main_file%.csv}-udp.csv"
+  if [[ -f "$udp_file" ]] && [[ $(wc -l <"$udp_file") -gt 1 ]]; then
+    _section "Per-Process UDP Traffic"
+    awk -F, '
+      NR == 1 { next }
+      {
+        in_sum[$2] += $4
+        out_sum[$2] += $5
+      }
+      END {
+        for (proc in in_sum) {
+          total = in_sum[proc] + out_sum[proc]
+          if (total > 0) printf "%d|%s|%d|%d\n", total, proc, in_sum[proc], out_sum[proc]
+        }
+      }
+    ' "$udp_file" | sort -t"|" -k1 -nr | head -10 |
+      awk -F"|" '
+        function human(b) {
+          if (b >= 1073741824) return sprintf("%.1f GB", b / 1073741824)
+          if (b >= 1048576) return sprintf("%.1f MB", b / 1048576)
+          if (b >= 1024) return sprintf("%.1f KB", b / 1024)
+          return b " B"
+        }
+        NR == 1 { printf "  %-105s %10s %10s\n", "Process", "Recv", "Sent" }
+        {
+          name = $2
+          if (length(name) > 105) name = substr(name, 1, 102) "..."
+          printf "  %-105s %10s %10s\n", name, human($3), human($4)
+        }
+      '
+    echo
+  fi
+
   # Connections
   if [[ -f "$conn_file" ]] && [[ $(wc -l <"$conn_file") -gt 1 ]]; then
     _section "Top Connections (by remote host)"
@@ -369,11 +403,72 @@ cmd_review() {
   fi
 
   echo
+
+  # Recommendations based on detected issues
+  _section "Recommendations"
+  local recs=0
+
+  if [[ "$main_available" -eq 1 ]]; then
+    # DFS channel
+    local ch
+    ch=$(awk -F, 'NR == 2 { print $3 }' "$main_file")
+    if [[ "$ch" =~ ^[0-9]+$ ]]; then
+      if (( ch >= 52 && ch <= 64 )) || (( ch >= 100 && ch <= 144 )); then
+        echo "  -> Switch router to a non-DFS channel (36, 40, 44, 48, 149, 153, 157, 161)"
+        echo "     Current channel $ch is DFS -- radar events can cause 4+ second disruptions."
+        recs=$((recs + 1))
+      fi
+    fi
+
+    # 2.4 GHz band
+    local band
+    band=$(awk -F, 'NR == 2 { print $22 }' "$main_file")
+    if [[ "$band" == "2.4" ]]; then
+      echo "  -> Switch to 5 GHz WiFi band"
+      echo "     2.4 GHz has only 3 non-overlapping channels and is heavily congested in most homes."
+      recs=$((recs + 1))
+    fi
+
+    # Weak signal
+    if [[ -n "$weak_signal" ]]; then
+      echo "  -> Move closer to the router, or add an access point"
+      echo "     Signal below -75 dBm causes MCS rate drops and retransmissions."
+      recs=$((recs + 1))
+    fi
+
+    # High latency spikes
+    if [[ -n "$spikes" ]]; then
+      echo "  -> Check for background uploads (cloud sync, backups, software updates)"
+      echo "     Also check if other devices are streaming or downloading."
+      echo "     Consider running 'networkQuality' in Terminal to test for bufferbloat."
+      recs=$((recs + 1))
+    fi
+
+    # Slow DNS
+    if [[ -n "$slow_dns" ]]; then
+      echo "  -> Switch to a faster DNS resolver (1.1.1.1 or 8.8.8.8)"
+      echo "     Slow DNS adds latency to every new connection during calls."
+      recs=$((recs + 1))
+    fi
+  fi
+
+  if [[ -n "${high_retx:-}" ]]; then
+    echo "  -> High retransmits indicate WiFi interference or congestion"
+    echo "     Try changing router channel, reducing channel width, or moving closer."
+    recs=$((recs + 1))
+  fi
+
+  if [[ "$recs" -eq 0 ]]; then
+    echo "  No specific recommendations -- network looks healthy."
+  fi
+
+  echo
   print_rule
   echo " Raw CSV     : $sample_file"
   [[ "$requested" != "$sample_file" ]] && echo " Input CSV   : $requested"
   [[ -f "$traffic_file" ]] && echo " Traffic CSV : $traffic_file"
   [[ -f "$conn_file" ]] && echo " Connect CSV : $conn_file"
+  [[ -f "${main_file%.csv}-udp.csv" ]] && echo " UDP CSV     : ${main_file%.csv}-udp.csv"
   print_rule
 }
 

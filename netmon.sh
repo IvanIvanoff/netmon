@@ -45,22 +45,24 @@ cmd_start() {
     rm -f "$PID_FILE"
   fi
 
-  local stamp logfile traffic_file conn_file scan_file
+  local stamp logfile traffic_file conn_file scan_file udp_file
   stamp=$(date +%Y%m%d-%H%M%S)
   logfile="$LOG_DIR/call-${stamp}.csv"
   traffic_file="$LOG_DIR/call-${stamp}-traffic.csv"
   conn_file="$LOG_DIR/call-${stamp}-connections.csv"
   scan_file="$LOG_DIR/call-${stamp}-scan.csv"
+  udp_file="$LOG_DIR/call-${stamp}-udp.csv"
 
   echo "Starting network monitor..."
   echo "  Log file : $logfile"
   echo "  Traffic  : $traffic_file"
   echo "  Connects : $conn_file"
+  echo "  UDP      : $udp_file"
   echo "  WiFi scan: $scan_file"
   echo "  Interval : ${INTERVAL}s"
   echo "  Ping host: $PING_TARGET"
 
-  sample_loop "$logfile" "$traffic_file" "$conn_file" "$scan_file" &
+  sample_loop "$logfile" "$traffic_file" "$conn_file" "$scan_file" "$udp_file" &
   local pid=$!
   echo "$pid" >"$PID_FILE"
   echo "  PID      : $pid"

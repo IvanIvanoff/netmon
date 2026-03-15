@@ -9,6 +9,9 @@ from netmon_tui import (
     top_traffic_rows,
     parse_connection_totals,
     top_connection_rows,
+    parse_udp_totals,
+    top_udp_rows,
+    subtract_udp_totals,
     parse_scan_csv,
     subtract_traffic_totals,
     subtract_connection_totals,
@@ -292,6 +295,56 @@ class TestSubtractTotals:
 
 
 # ---------------------------------------------------------------------------
+# parse_udp_totals / top_udp_rows
+# ---------------------------------------------------------------------------
+
+class TestParseUdpTotals:
+    def test_basic_parsing(self, udp_csv):
+        totals = parse_udp_totals(udp_csv)
+        assert "zoom.us" in totals
+        assert "Google Chrome" in totals
+        # zoom.us: 80000+90000=170000 in, 25000+28000=53000 out
+        assert totals["zoom.us"][0] == 170000
+        assert totals["zoom.us"][1] == 53000
+
+    def test_missing_file(self, tmp_path):
+        totals = parse_udp_totals(tmp_path / "nonexistent.csv")
+        assert totals == {}
+
+    def test_empty_file(self, empty_csv):
+        totals = parse_udp_totals(empty_csv)
+        assert totals == {}
+
+
+class TestTopUdpRows:
+    def test_sorted_by_total(self, udp_csv):
+        totals = parse_udp_totals(udp_csv)
+        rows = top_udp_rows(totals)
+        assert len(rows) > 0
+        # zoom.us has most traffic (223000 total), should be first
+        assert rows[0][0] == "zoom.us"
+
+    def test_limit_to_10(self):
+        totals = {f"proc{i}": [1000 * i, 500 * i] for i in range(15)}
+        rows = top_udp_rows(totals)
+        assert len(rows) == 10
+
+
+class TestSubtractUdpTotals:
+    def test_basic_subtraction(self):
+        current = {"zoom.us": [100000, 50000], "Chrome": [20000, 10000]}
+        baseline = {"zoom.us": [80000, 25000]}
+        result = subtract_udp_totals(current, baseline)
+        assert result["zoom.us"] == [20000, 25000]
+        assert result["Chrome"] == [20000, 10000]
+
+    def test_empty_baseline(self):
+        current = {"zoom.us": [100000, 50000]}
+        result = subtract_udp_totals(current, {})
+        assert result == current
+
+
+# ---------------------------------------------------------------------------
 # CSV column count integrity
 # ---------------------------------------------------------------------------
 
@@ -326,6 +379,9 @@ class TestCsvIntegrity:
 
     def test_scan(self, scan_csv):
         self._check_column_consistency(scan_csv)
+
+    def test_udp(self, udp_csv):
+        self._check_column_consistency(udp_csv)
 
     def test_main_has_27_columns(self, good_csv):
         header = good_csv.read_text().split("\n")[0]

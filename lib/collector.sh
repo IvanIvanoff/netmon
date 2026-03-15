@@ -15,18 +15,19 @@ sample_loop() {
   # (e.g. WiFi drops during network switch)
   set +e
 
-  local logfile="$1" traffic_file="$2" conn_file="$3" scan_file="$4"
+  local logfile="$1" traffic_file="$2" conn_file="$3" scan_file="$4" udp_file="$5"
 
   echo "$MAIN_CSV_HEADER" >"$logfile"
   echo "$TRAFFIC_CSV_HEADER" >"$traffic_file"
   echo "$CONNECTIONS_CSV_HEADER" >"$conn_file"
   echo "$SCAN_CSV_HEADER" >"$scan_file"
+  echo "$UDP_CSV_HEADER" >"$udp_file"
 
   local pub_ip
   pub_ip=$(get_public_ip)
   pub_ip="${pub_ip:-?}"
 
-  local ping_file dns_file gw_ping_file prev_traffic curr_traffic prev_conn curr_conn name_file ext_file
+  local ping_file dns_file gw_ping_file prev_traffic curr_traffic prev_conn curr_conn prev_udp curr_udp name_file ext_file
   ping_file=$(make_tmp_file "ping")
   dns_file=$(make_tmp_file "dns")
   gw_ping_file=$(make_tmp_file "gwping")
@@ -34,15 +35,18 @@ sample_loop() {
   curr_traffic=$(make_tmp_file "tcurr")
   prev_conn=$(make_tmp_file "cprev")
   curr_conn=$(make_tmp_file "ccurr")
+  prev_udp=$(make_tmp_file "uprev")
+  curr_udp=$(make_tmp_file "ucurr")
   name_file=$(make_tmp_file "names")
   ext_file=$(make_tmp_file "ext")
 
   # shellcheck disable=SC2064
-  trap "rm -f '$ping_file' '$dns_file' '$gw_ping_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$name_file' '$ext_file'" EXIT INT TERM
+  trap "rm -f '$ping_file' '$dns_file' '$gw_ping_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$prev_udp' '$curr_udp' '$name_file' '$ext_file'" EXIT INT TERM
 
   # Baseline snapshots (not logged; used as zero point)
   _nettop_snapshot >"$prev_traffic" || : >"$prev_traffic"
   _nettop_conn_snapshot >"$prev_conn" || : >"$prev_conn"
+  _nettop_udp_snapshot >"$prev_udp" || : >"$prev_udp"
 
   # Baseline interface errors (read actual counters so first sample delta is 0)
   local prev_ierrs=0 prev_oerrs=0
@@ -108,6 +112,7 @@ sample_loop() {
     build_name_map "$curr_traffic" "$name_file" 2>/dev/null || true
     capture_traffic "$ts" "$traffic_file" "$prev_traffic" "$curr_traffic" "$name_file" || true
     capture_connections "$ts" "$conn_file" "$prev_conn" "$curr_conn" "$name_file" || true
+    capture_udp_traffic "$ts" "$udp_file" "$prev_udp" "$curr_udp" "$name_file" || true
 
     # System metrics (fast, no background needed)
     cpu_usage=$(get_cpu_usage)
