@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from netmon_common import (
-    to_float, latest_main_log, resolve_diag_file, resolve_main_file,
-    session_name as derive_session_name, read_csv_rows,
+    to_float, latest_main_log, resolve_related, resolve_diag_file,
+    resolve_main_file, session_name as derive_session_name, read_csv_rows,
 )
 
 
@@ -111,9 +111,105 @@ def _panel(title, traces, height=200, ytitle="", yrange=None,
     return {"traces": traces, "layout": layout}
 
 
+def _human_bytes(n: int) -> str:
+    n = max(0, int(n))
+    if n >= 1024**3:
+        return f"{n / 1024**3:.1f} GB"
+    if n >= 1024**2:
+        return f"{n / 1024**2:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _aggregate_traffic(rows: List[Dict[str, str]], top_n: int = 10,
+                       ) -> List[dict]:
+    """Aggregate per-process traffic: totals + time series."""
+    from collections import defaultdict
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])  # in, out, retx
+    series: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows:
+        proc = r.get("process", "?")
+        b_in = int(r.get("bytes_in", 0) or 0)
+        b_out = int(r.get("bytes_out", 0) or 0)
+        retx = int(r.get("retransmits", 0) or 0)
+        totals[proc][0] += b_in
+        totals[proc][1] += b_out
+        totals[proc][2] += retx
+        series[proc].append({
+            "ts": r.get("sample_ts", ""),
+            "in": b_in, "out": b_out,
+        })
+    ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
+                    reverse=True)[:top_n]
+    result = []
+    for proc, (total_in, total_out, total_retx) in ranked:
+        if total_in + total_out == 0:
+            continue
+        pts = series[proc]
+        result.append({
+            "process": proc,
+            "bytes_in": total_in,
+            "bytes_out": total_out,
+            "retransmits": total_retx,
+            "human_in": _human_bytes(total_in),
+            "human_out": _human_bytes(total_out),
+            "series_ts": [p["ts"] for p in pts],
+            "series_in": [p["in"] for p in pts],
+            "series_out": [p["out"] for p in pts],
+        })
+    return result
+
+
+def _aggregate_connections(rows: List[Dict[str, str]], top_n: int = 10,
+                           ) -> List[dict]:
+    """Aggregate per-connection traffic: totals + time series."""
+    from collections import defaultdict
+    totals: Dict[str, List] = defaultdict(lambda: [0, 0, 0, "", ""])
+    series: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows:
+        proc = r.get("process", "?")
+        remote = r.get("remote_ip", "?")
+        port = r.get("remote_port", "?")
+        key = f"{proc} → {remote}:{port}"
+        b_in = int(r.get("bytes_in", 0) or 0)
+        b_out = int(r.get("bytes_out", 0) or 0)
+        retx = int(r.get("retransmits", 0) or 0)
+        totals[key][0] += b_in
+        totals[key][1] += b_out
+        totals[key][2] += retx
+        series[key].append({
+            "ts": r.get("sample_ts", ""),
+            "in": b_in, "out": b_out,
+        })
+    ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
+                    reverse=True)[:top_n]
+    result = []
+    for key, (total_in, total_out, total_retx, _, _) in ranked:
+        if total_in + total_out == 0:
+            continue
+        pts = series[key]
+        result.append({
+            "connection": key,
+            "bytes_in": total_in,
+            "bytes_out": total_out,
+            "retransmits": total_retx,
+            "human_in": _human_bytes(total_in),
+            "human_out": _human_bytes(total_out),
+            "series_ts": [p["ts"] for p in pts],
+            "series_in": [p["in"] for p in pts],
+            "series_out": [p["out"] for p in pts],
+        })
+    return result
+
+
 def build_chart_data(diag_rows: List[Dict[str, str]],
                      main_rows: List[Dict[str, str]],
-                     session_name: str) -> dict:
+                     session_name: str,
+                     traffic_rows: Optional[List[Dict[str, str]]] = None,
+                     conn_rows: Optional[List[Dict[str, str]]] = None,
+                     udp_rows: Optional[List[Dict[str, str]]] = None,
+                     ) -> dict:
     """Build JSON-serializable chart data from CSV rows."""
 
     # --- Diagnostics scatter ---
@@ -210,15 +306,24 @@ def build_chart_data(diag_rows: List[Dict[str, str]],
         "diagLayout": diag_layout,
         "panels": panels,
         "hasMetrics": bool(main_rows),
+        "tcpTraffic": _aggregate_traffic(traffic_rows or []),
+        "udpTraffic": _aggregate_traffic(udp_rows or []),
+        "connections": _aggregate_connections(conn_rows or []),
     }
 
 
 def build_html(diag_rows: List[Dict[str, str]],
                main_rows: List[Dict[str, str]],
                session_name: str,
-               live: bool = False) -> str:
+               live: bool = False,
+               traffic_rows: Optional[List[Dict[str, str]]] = None,
+               conn_rows: Optional[List[Dict[str, str]]] = None,
+               udp_rows: Optional[List[Dict[str, str]]] = None,
+               ) -> str:
     """Build a self-contained HTML string with Plotly charts."""
-    data = build_chart_data(diag_rows, main_rows, session_name)
+    data = build_chart_data(diag_rows, main_rows, session_name,
+                            traffic_rows=traffic_rows, conn_rows=conn_rows,
+                            udp_rows=udp_rows)
     initial_data_json = json.dumps(data)
     escaped_session = html.escape(session_name)
 
@@ -336,6 +441,26 @@ scheduleRefresh();
   }}
   .controls button:hover {{ background: #1a4080; }}
   #panels-container .panel {{ margin-bottom: 8px; }}
+  .traffic-section {{ margin-top: 20px; }}
+  .traffic-section h2 {{ font-size: 1.1em; color: #bbb; margin: 18px 0 8px 0; }}
+  .traffic-table {{ width: 100%; border-collapse: collapse; background: #16213e;
+                    border-radius: 8px; margin-bottom: 12px; }}
+  .traffic-table th {{ text-align: left; padding: 8px 12px; color: #888;
+                       font-size: 0.8em; border-bottom: 1px solid #1a4080;
+                       text-transform: uppercase; letter-spacing: 0.5px; }}
+  .traffic-table td {{ padding: 6px 12px; border-bottom: 1px solid #0f3460;
+                       font-size: 0.9em; position: relative; }}
+  .traffic-table tr:last-child td {{ border-bottom: none; }}
+  .traffic-table .name {{ color: #eee; max-width: 250px; overflow: hidden;
+                          text-overflow: ellipsis; white-space: nowrap; }}
+  .traffic-table .bytes {{ color: #3498db; text-align: right; font-family: monospace; }}
+  .traffic-table .retx {{ color: #e74c3c; text-align: right; font-family: monospace; }}
+  .traffic-table .spark {{ width: 220px; height: 60px; }}
+  #spark-tooltip {{ position: fixed; z-index: 10000; pointer-events: none;
+                    background: #222; border: 1px solid #555; border-radius: 4px;
+                    padding: 6px 10px; font-size: 13px; color: #eee;
+                    display: none; white-space: nowrap;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.5); }}
 </style>
 </head>
 <body>
@@ -344,6 +469,24 @@ scheduleRefresh();
 <div class="stats" id="stats"></div>
 <div class="panel" id="diag-chart"></div>
 <div id="panels-container"></div>
+<div class="traffic-section">
+<div class="controls" style="margin-top:20px">
+  <label>Aggregate traffic:
+    <select id="traffic-agg">
+      <option value="0">No aggregation</option>
+      <option value="30" selected>30s</option>
+      <option value="60">1m</option>
+      <option value="300">5m</option>
+      <option value="600">10m</option>
+      <option value="900">15m</option>
+      <option value="1800">30m</option>
+      <option value="3600">1h</option>
+    </select>
+  </label>
+</div>
+<div id="traffic-section"></div>
+</div>
+<div id="spark-tooltip"></div>
 
 <script>
 var initialData = {initial_data_json};
@@ -385,6 +528,142 @@ function renderPanels(panels) {{
   }});
 }}
 
+function renderTrafficTable(containerId, title, items, nameField) {{
+  if (!items || items.length === 0) return '';
+  var h = '<h2>' + title + '</h2>';
+  h += '<table class="traffic-table"><thead><tr>';
+  h += '<th>' + (nameField === 'connection' ? 'Connection' : 'Process') + '</th>';
+  h += '<th style="text-align:right">In</th><th style="text-align:right">Out</th>';
+  h += '<th style="text-align:right">Retx</th>';
+  h += '<th>Traffic over time</th></tr></thead><tbody>';
+  items.forEach(function(item, i) {{
+    var id = containerId + '-spark-' + i;
+    h += '<tr><td class="name" title="' + item[nameField] + '">' + item[nameField] + '</td>';
+    h += '<td class="bytes">' + item.human_in + '</td>';
+    h += '<td class="bytes">' + item.human_out + '</td>';
+    h += '<td class="retx">' + (item.retransmits || 0) + '</td>';
+    h += '<td class="spark"><div id="' + id + '"></div></td></tr>';
+  }});
+  h += '</tbody></table>';
+  return h;
+}}
+
+function humanBytes(n) {{
+  if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}}
+
+function getAggBucket() {{
+  var el = document.getElementById('traffic-agg');
+  return el ? parseInt(el.value, 10) : 0;
+}}
+
+function aggregateSeries(timestamps, valIn, valOut, bucketSec) {{
+  if (!bucketSec || bucketSec <= 0 || timestamps.length === 0) {{
+    return {{ ts: timestamps, sin: valIn, sout: valOut }};
+  }}
+  var buckets = {{}};
+  var order = [];
+  for (var i = 0; i < timestamps.length; i++) {{
+    var t = new Date(timestamps[i]).getTime();
+    if (isNaN(t)) continue;
+    var key = Math.floor(t / (bucketSec * 1000)) * (bucketSec * 1000);
+    if (!(key in buckets)) {{
+      buckets[key] = [0, 0];
+      order.push(key);
+    }}
+    buckets[key][0] += valIn[i];
+    buckets[key][1] += valOut[i];
+  }}
+  var rts = [], rin = [], rout = [];
+  order.forEach(function(k) {{
+    rts.push(new Date(k).toISOString().replace('T', ' ').substring(0, 19));
+    rin.push(buckets[k][0]);
+    rout.push(buckets[k][1]);
+  }});
+  return {{ ts: rts, sin: rin, sout: rout }};
+}}
+
+function attachSparkTooltip(chartId, hIn, hOut) {{
+  var tip = document.getElementById('spark-tooltip');
+  var chartEl = document.getElementById(chartId);
+  chartEl.on('plotly_hover', function(ev) {{
+    var pt = ev.points[0];
+    var idx = pt.pointIndex;
+    var ts = pt.x;
+    var tsShort = typeof ts === 'string' ? ts.split(' ').pop() || ts : ts;
+    tip.innerHTML = '<b>' + tsShort + '</b><br>'
+      + '<span style="color:#3498db">\u25cf</span> ' + hIn[idx]
+      + '<br><span style="color:#2ecc71">\u25cf</span> ' + hOut[idx];
+    tip.style.display = 'block';
+  }});
+  chartEl.on('plotly_unhover', function() {{
+    tip.style.display = 'none';
+  }});
+  chartEl.addEventListener('mousemove', function(e) {{
+    var tw = tip.offsetWidth || 120;
+    var th = tip.offsetHeight || 60;
+    var left = e.clientX + 12;
+    var top = e.clientY - 10;
+    if (left + tw > window.innerWidth - 4) left = e.clientX - tw - 12;
+    if (top + th > window.innerHeight - 4) top = e.clientY - th - 4;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }});
+}}
+
+function renderTrafficSparklines(containerId, items) {{
+  if (!items) return;
+  var bucket = getAggBucket();
+  items.forEach(function(item, i) {{
+    var id = containerId + '-spark-' + i;
+    var el = document.getElementById(id);
+    if (!el || !item.series_ts || item.series_ts.length < 2) return;
+    var agg = aggregateSeries(item.series_ts, item.series_in, item.series_out, bucket);
+    var hoverIn = agg.sin.map(function(v) {{ return 'In: ' + humanBytes(v); }});
+    var hoverOut = agg.sout.map(function(v) {{ return 'Out: ' + humanBytes(v); }});
+    Plotly.newPlot(id, [
+      {{ x: agg.ts, y: agg.sin, mode: 'lines', name: 'In',
+        line: {{ color: '#3498db', width: 1.5 }},
+        text: hoverIn, hoverinfo: 'none' }},
+      {{ x: agg.ts, y: agg.sout, mode: 'lines', name: 'Out',
+        line: {{ color: '#2ecc71', width: 1.5 }},
+        text: hoverOut, hoverinfo: 'none' }}
+    ], {{
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+      margin: {{ t: 2, b: 2, l: 0, r: 0 }},
+      xaxis: {{ visible: false }}, yaxis: {{ visible: false, rangemode: 'tozero' }},
+      showlegend: false, height: 60, hovermode: 'closest',
+    }}, {{ responsive: true, displayModeBar: false }});
+    attachSparkTooltip(id, hoverIn, hoverOut);
+  }});
+}}
+
+var _lastTrafficData = null;
+
+function renderTraffic(data) {{
+  _lastTrafficData = data;
+  var sec = document.getElementById('traffic-section');
+  if (!sec) return;
+  var h = '';
+  h += renderTrafficTable('tcp', 'TCP Traffic by Process', data.tcpTraffic, 'process');
+  h += renderTrafficTable('udp', 'UDP Traffic by Process', data.udpTraffic, 'process');
+  h += renderTrafficTable('conn', 'Top Connections', data.connections, 'connection');
+  sec.innerHTML = h;
+  renderTrafficSparklines('tcp', data.tcpTraffic);
+  renderTrafficSparklines('udp', data.udpTraffic);
+  renderTrafficSparklines('conn', data.connections);
+}}
+
+(function() {{
+  var aggEl = document.getElementById('traffic-agg');
+  if (aggEl) aggEl.addEventListener('change', function() {{
+    if (_lastTrafficData) renderTraffic(_lastTrafficData);
+  }});
+}})()
+
 function renderAll(data) {{
   var diagLayout = Object.assign({{}}, data.diagLayout, dark);
   Plotly.react('diag-chart', data.diagTraces, diagLayout, plotCfg);
@@ -392,6 +671,7 @@ function renderAll(data) {{
   if (data.panels && data.panels.length > 0) {{
     renderPanels(data.panels);
   }}
+  renderTraffic(data);
 }}
 
 renderAll(initialData);
@@ -410,9 +690,13 @@ class ChartHandler(BaseHTTPRequestHandler):
     """Serves the chart HTML and a JSON data API."""
 
     def __init__(self, *args, diag_file: Path, main_file: Optional[Path],
+                 traffic_file: Path, conn_file: Path, udp_file: Path,
                  session_name: str, **kwargs):
         self.diag_file = diag_file
         self.main_file = main_file
+        self.traffic_file = traffic_file
+        self.conn_file = conn_file
+        self.udp_file = udp_file
         self.session_name = session_name
         super().__init__(*args, **kwargs)
 
@@ -425,22 +709,25 @@ class ChartHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _read_session(self):
-        diag = read_csv_rows(self.diag_file)
-        main = (read_csv_rows(self.main_file)
-                if self.main_file and self.main_file.exists() else [])
-        return diag, main
+        def _read(p):
+            return read_csv_rows(p) if p and p.exists() else []
+        return (_read(self.diag_file), _read(self.main_file),
+                _read(self.traffic_file), _read(self.conn_file),
+                _read(self.udp_file))
 
     def _serve_html(self):
-        diag_rows, main_rows = self._read_session()
-        content = build_html(diag_rows, main_rows, self.session_name, live=True)
+        diag, main, tcp, conn, udp = self._read_session()
+        content = build_html(diag, main, self.session_name, live=True,
+                             traffic_rows=tcp, conn_rows=conn, udp_rows=udp)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))
 
     def _serve_data(self):
-        diag_rows, main_rows = self._read_session()
-        data = build_chart_data(diag_rows, main_rows, self.session_name)
+        diag, main, tcp, conn, udp = self._read_session()
+        data = build_chart_data(diag, main, self.session_name,
+                                traffic_rows=tcp, conn_rows=conn, udp_rows=udp)
         payload = json.dumps(data).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -454,9 +741,12 @@ class ChartHandler(BaseHTTPRequestHandler):
 
 
 def run_server(diag_file: Path, main_file: Optional[Path],
+               traffic_file: Path, conn_file: Path, udp_file: Path,
                session_name: str, port: int, no_open: bool) -> int:
     handler = partial(ChartHandler, diag_file=diag_file,
-                      main_file=main_file, session_name=session_name)
+                      main_file=main_file, traffic_file=traffic_file,
+                      conn_file=conn_file, udp_file=udp_file,
+                      session_name=session_name)
     server = HTTPServer(("127.0.0.1", port), handler)
     actual_port = server.server_address[1]
     url = f"http://127.0.0.1:{actual_port}"
@@ -504,13 +794,24 @@ def main() -> int:
 
     session_name = derive_session_name(main_file)
 
+    # Resolve related session files
+    if main_file:
+        traffic_file, conn_file, _scan, udp_file, _ = resolve_related(main_file)
+    else:
+        traffic_file = conn_file = udp_file = Path("/dev/null")
+
     diag_rows = read_csv_rows(diag_file) if diag_file.exists() else []
+
+    def _read(p):
+        return read_csv_rows(p) if p.exists() else []
 
     # Static export mode
     if args.output:
-        main_rows = (read_csv_rows(main_file)
-                     if main_file and main_file.exists() else [])
-        html_content = build_html(diag_rows, main_rows, session_name, live=False)
+        main_rows = _read(main_file) if main_file else []
+        html_content = build_html(
+            diag_rows, main_rows, session_name, live=False,
+            traffic_rows=_read(traffic_file), conn_rows=_read(conn_file),
+            udp_rows=_read(udp_file))
         out_path = Path(args.output)
         out_path.write_text(html_content)
         print(f"Chart written to: {out_path}")
@@ -519,8 +820,8 @@ def main() -> int:
         return 0
 
     # Live server mode (default)
-    return run_server(diag_file, main_file, session_name,
-                      args.port, args.no_open)
+    return run_server(diag_file, main_file, traffic_file, conn_file,
+                      udp_file, session_name, args.port, args.no_open)
 
 
 if __name__ == "__main__":
