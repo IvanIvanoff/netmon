@@ -167,3 +167,14 @@ channel_to_band() {
     echo "?"
   fi
 }
+
+is_dfs_channel() {
+  local ch="$1"
+  [[ "$ch" =~ ^[0-9]+$ ]] || { echo "0"; return 0; }
+  # DFS channels in the US: 52-64 and 100-144
+  if (( ch >= 52 && ch <= 64 )) || (( ch >= 100 && ch <= 144 )); then
+    echo "1"
+  else
+    echo "0"
+  fi
+}

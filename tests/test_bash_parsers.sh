@@ -166,6 +166,25 @@ assert_eq "invalid -> ?" "?" "$(channel_to_band abc)"
 assert_eq "empty -> ?" "?" "$(channel_to_band "")"
 
 # ===================================================================
+# is_dfs_channel tests
+# ===================================================================
+
+echo "=== is_dfs_channel ==="
+
+assert_eq "ch36 -> not DFS" "0" "$(is_dfs_channel 36)"
+assert_eq "ch48 -> not DFS" "0" "$(is_dfs_channel 48)"
+assert_eq "ch52 -> DFS" "1" "$(is_dfs_channel 52)"
+assert_eq "ch60 -> DFS" "1" "$(is_dfs_channel 60)"
+assert_eq "ch64 -> DFS" "1" "$(is_dfs_channel 64)"
+assert_eq "ch100 -> DFS" "1" "$(is_dfs_channel 100)"
+assert_eq "ch120 -> DFS" "1" "$(is_dfs_channel 120)"
+assert_eq "ch144 -> DFS" "1" "$(is_dfs_channel 144)"
+assert_eq "ch149 -> not DFS" "0" "$(is_dfs_channel 149)"
+assert_eq "ch1 -> not DFS" "0" "$(is_dfs_channel 1)"
+assert_eq "invalid -> not DFS" "0" "$(is_dfs_channel abc)"
+assert_eq "empty -> not DFS" "0" "$(is_dfs_channel "")"
+
+# ===================================================================
 # sanitize_csv_field tests
 # ===================================================================
 

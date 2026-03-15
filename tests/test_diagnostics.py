@@ -268,6 +268,149 @@ class TestChannelBand:
 
 
 # ---------------------------------------------------------------------------
+# DFS channel warning
+# ---------------------------------------------------------------------------
+
+class TestDFSChannel:
+    def test_dfs_channel_52(self):
+        main = _make_main({"latest": {
+            "rssi_dBm": "-45", "snr_dB": "50",
+            "channel": "52", "channel_band": "5",
+        }})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "dfs channel 52")
+
+    def test_dfs_channel_100(self):
+        main = _make_main({"latest": {
+            "rssi_dBm": "-45", "snr_dB": "50",
+            "channel": "100", "channel_band": "5",
+        }})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "dfs channel 100")
+
+    def test_non_dfs_channel_36(self):
+        main = _make_main()  # default channel is 36
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "dfs channel")
+
+    def test_non_dfs_channel_149(self):
+        main = _make_main({"latest": {
+            "rssi_dBm": "-45", "snr_dB": "50",
+            "channel": "149", "channel_band": "5",
+        }})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "dfs channel")
+
+
+# ---------------------------------------------------------------------------
+# Band change detection
+# ---------------------------------------------------------------------------
+
+class TestBandChange:
+    def test_band_switch_detected(self):
+        main = _make_main({"band_set": {"5", "2.4"}})
+        issues = run_diagnostics(main, [])
+        assert _has_severity(issues, "bad")
+        assert _has_message_containing(issues, "band switch")
+
+    def test_stable_band_no_warning(self):
+        main = _make_main({"band_set": {"5"}})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "band switch")
+
+
+# ---------------------------------------------------------------------------
+# Channel width instability
+# ---------------------------------------------------------------------------
+
+class TestChannelWidth:
+    def test_wide_channel_with_signal_issues(self):
+        main = _make_main({
+            "latest": {
+                "rssi_dBm": "-70", "snr_dB": "20",
+                "channel": "36", "channel_band": "5", "channel_width": "80",
+            },
+            "rssi_vals": [-70.0] * 10,
+            "loss_vals": [0.0] * 10,
+        })
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "80 mhz")
+
+    def test_wide_channel_with_frequent_loss(self):
+        main = _make_main({
+            "latest": {
+                "rssi_dBm": "-45", "snr_dB": "50",
+                "channel": "36", "channel_band": "5", "channel_width": "160",
+            },
+            "loss_vals": [0.0] * 5 + [2.0, 0.0, 3.0, 1.0, 0.0],
+        })
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "160 mhz")
+
+    def test_wide_channel_with_rare_loss_no_warning(self):
+        """Single loss blip on 80 MHz should not trigger width warning."""
+        main = _make_main({
+            "latest": {
+                "rssi_dBm": "-45", "snr_dB": "50",
+                "channel": "36", "channel_band": "5", "channel_width": "80",
+            },
+            "loss_vals": [0.0] * 9 + [3.0],
+        })
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mhz channel width")
+
+    def test_wide_channel_no_problems(self):
+        """80 MHz with good signal and no loss should not warn."""
+        main = _make_main()  # defaults: -45 dBm, SNR 50, 80 MHz, no loss
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mhz channel width")
+
+    def test_narrow_channel_no_warning(self):
+        main = _make_main({
+            "latest": {
+                "rssi_dBm": "-70", "snr_dB": "20",
+                "channel": "36", "channel_band": "5", "channel_width": "40",
+            },
+            "rssi_vals": [-70.0] * 10,
+        })
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mhz channel width")
+
+
+# ---------------------------------------------------------------------------
+# MCS index trend
+# ---------------------------------------------------------------------------
+
+class TestMCSTrend:
+    def test_mcs_drop_detected(self):
+        main = _make_main({"mcs_vals": [9.0] * 8 + [2.0, 2.0]})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "mcs rate drop")
+
+    def test_stable_mcs_no_warning(self):
+        main = _make_main({"mcs_vals": [9.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mcs rate drop")
+
+    def test_small_mcs_drop_no_warning(self):
+        """Drop of 2 (9→7) should not warn — threshold is 4."""
+        main = _make_main({"mcs_vals": [9.0] * 8 + [7.0, 7.0]})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mcs rate drop")
+
+    def test_mcs_drop_but_still_high(self):
+        """Drop from 11→7 is >=4 but min is 7 (>=5), so no warning."""
+        main = _make_main({"mcs_vals": [11.0] * 8 + [7.0, 7.0]})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mcs rate drop")
+
+    def test_too_few_samples(self):
+        main = _make_main({"mcs_vals": [9.0, 2.0]})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "mcs rate drop")
+
+
+# ---------------------------------------------------------------------------
 # Roaming / channel changes
 # ---------------------------------------------------------------------------
 
@@ -396,7 +539,8 @@ class TestCombinedScenarios:
         main = _make_main({
             "latest": {
                 "rssi_dBm": "-82", "snr_dB": "3",
-                "channel": "6", "channel_band": "2.4",
+                "channel": "52", "channel_band": "2.4",
+                "channel_width": "160",
                 "gateway_ip": "192.168.1.1",
             },
             "ping_vals": [150.0] * 10,
@@ -411,8 +555,10 @@ class TestCombinedScenarios:
             "mem_vals": [95.0] * 10,
             "if_ierrs_vals": [20.0] * 10,
             "if_oerrs_vals": [15.0] * 10,
+            "mcs_vals": [9.0] * 8 + [1.0, 1.0],
             "bssid_set": {"aa:bb:cc:dd:ee:ff", "11:22:33:44:55:66"},
-            "channel_set": {"6", "11"},
+            "channel_set": {"52", "11"},
+            "band_set": {"5", "2.4"},
         })
         issues = run_diagnostics(main, [])
         severities = _severities(issues)

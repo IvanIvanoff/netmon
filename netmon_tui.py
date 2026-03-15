@@ -172,8 +172,10 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
         "mem_vals": [],
         "if_ierrs_vals": [],
         "if_oerrs_vals": [],
+        "mcs_vals": [],
         "bssid_set": set(),
         "channel_set": set(),
+        "band_set": set(),
     }
 
     if not path.exists():
@@ -205,6 +207,7 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
                     ("mem_vals", "mem_pressure"),
                     ("if_ierrs_vals", "if_ierrs"),
                     ("if_oerrs_vals", "if_oerrs"),
+                    ("mcs_vals", "mcs"),
                 ]:
                     v = to_float(row.get(field, ""))
                     if v is not None:
@@ -216,6 +219,9 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
                 ch = row.get("channel", "")
                 if ch and ch != "?":
                     result["channel_set"].add(ch)
+                band_val = row.get("channel_band", "")
+                if band_val and band_val != "?":
+                    result["band_set"].add(band_val)
     except Exception:
         return result
 
@@ -431,10 +437,42 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
         elif tx_now < 100:
             issues.append(("warn", f"Low TX rate: {tx_now:.0f} Mbps"))
 
+    # -- MCS index drops --
+    mcs_vals: List[float] = main.get("mcs_vals", [])
+    if len(mcs_vals) >= 5:
+        recent_mcs = mcs_vals[-5:]
+        mcs_min = min(recent_mcs)
+        mcs_max = max(mcs_vals)
+        if mcs_max - mcs_min >= 4 and mcs_min < 5:
+            issues.append(("warn", f"MCS rate drop: {int(mcs_max)} \u2192 {int(mcs_min)} (interference)"))
+
     # -- Channel band --
     band = latest.get("channel_band", "")
     if band == "2.4":
         issues.append(("warn", "On 2.4 GHz band (slower, more interference)"))
+
+    # -- DFS channel warning --
+    channel_str = latest.get("channel", "")
+    ch_num = to_float(channel_str)
+    if ch_num is not None:
+        ch_int = int(ch_num)
+        if (52 <= ch_int <= 64) or (100 <= ch_int <= 144):
+            issues.append(("warn", f"DFS channel {ch_int} \u2014 radar events can disrupt calls"))
+
+    # -- Band changes (5 GHz → 2.4 GHz) --
+    band_set: set = main.get("band_set", set())
+    if "2.4" in band_set and "5" in band_set:
+        issues.append(("bad", "Band switch detected: moved between 5 GHz and 2.4 GHz"))
+
+    # -- Wide channel + problems --
+    ch_width = latest.get("channel_width", "")
+    width_num = to_float(ch_width)
+    if width_num is not None and width_num >= 80:
+        has_signal_issues = (rssi_now is not None and rssi_now < -65) or (snr_now is not None and snr_now < 25)
+        recent_loss = loss_vals[-10:] if loss_vals else []
+        has_frequent_loss = sum(1 for v in recent_loss if v > 0) >= 3
+        if has_signal_issues or has_frequent_loss:
+            issues.append(("warn", f"{int(width_num)} MHz channel width \u2014 try 40 MHz for stability"))
 
     # -- Roaming --
     if len(bssid_set) > 1:

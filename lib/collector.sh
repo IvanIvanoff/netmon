@@ -44,8 +44,17 @@ sample_loop() {
   _nettop_snapshot >"$prev_traffic" || : >"$prev_traffic"
   _nettop_conn_snapshot >"$prev_conn" || : >"$prev_conn"
 
-  # Baseline interface errors
+  # Baseline interface errors (read actual counters so first sample delta is 0)
   local prev_ierrs=0 prev_oerrs=0
+  local baseline_iface
+  baseline_iface=$(get_active_interface || echo "unknown")
+  if [[ -n "$baseline_iface" && "$baseline_iface" != "unknown" ]]; then
+    local baseline_errs
+    baseline_errs=$(get_interface_errors "$baseline_iface" || echo "0|0")
+    IFS="|" read -r prev_ierrs prev_oerrs <<<"$baseline_errs"
+    prev_ierrs="${prev_ierrs:-0}"
+    prev_oerrs="${prev_oerrs:-0}"
+  fi
   local scan_counter=0
 
   while true; do
