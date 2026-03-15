@@ -71,6 +71,8 @@ latest_main_log() {
   for file in "$LOG_DIR"/call-*.csv; do
     [[ "$file" == *-traffic.csv ]] && continue
     [[ "$file" == *-connections.csv ]] && continue
+    [[ "$file" == *-scan.csv ]] && continue
+    [[ "$file" == *-udp.csv ]] && continue
     [[ -z "$latest" || "$file" -nt "$latest" ]] && latest="$file"
   done
   shopt -u nullglob

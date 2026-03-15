@@ -441,14 +441,29 @@ class TestRoaming:
 # ---------------------------------------------------------------------------
 
 class TestAWDL:
-    def test_awdl_active_warns(self):
+    def test_awdl_active_with_spikes_warns(self):
+        """AWDL active + latency spikes = warn."""
+        main = _make_main({
+            "latest": {
+                "rssi_dBm": "-45", "snr_dB": "50",
+                "channel": "36", "channel_band": "5",
+                "awdl_status": "active",
+            },
+            # Normal ~12ms with two spikes to 80ms
+            "ping_vals": [12.0, 12.0, 80.0, 12.0, 12.0, 12.0, 80.0, 12.0, 12.0, 12.0],
+        })
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "awdl")
+
+    def test_awdl_active_no_spikes_no_warning(self):
+        """AWDL active but stable latency = no warn."""
         main = _make_main({"latest": {
             "rssi_dBm": "-45", "snr_dB": "50",
             "channel": "36", "channel_band": "5",
             "awdl_status": "active",
         }})
         issues = run_diagnostics(main, [])
-        assert _has_message_containing(issues, "awdl")
+        assert not _has_message_containing(issues, "awdl")
 
     def test_awdl_inactive_no_warning(self):
         main = _make_main({"latest": {

@@ -120,7 +120,7 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     candidates = []
     for path in log_dir.glob("call-*.csv"):
         name = path.name
-        if name.endswith("-traffic.csv") or name.endswith("-connections.csv") or name.endswith("-scan.csv"):
+        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv", "-udp.csv")):
             continue
         candidates.append(path)
     if not candidates:
@@ -539,10 +539,14 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
         elif mem_now > 80:
             issues.append(("warn", f"High memory: {mem_now:.0f}% used"))
 
-    # -- AWDL active --
+    # -- AWDL active (only warn if latency spikes are present) --
     awdl = latest.get("awdl_status", "")
-    if awdl == "active":
-        issues.append(("warn", "AWDL active (AirDrop/Handoff) \u2014 may cause periodic lag"))
+    if awdl == "active" and ping_vals and len(ping_vals) >= 5:
+        recent = ping_vals[-10:]
+        avg_ping = sum(recent) / len(recent)
+        spikes = sum(1 for v in recent if v > avg_ping * 2 and v > 30)
+        if spikes >= 2:
+            issues.append(("warn", "AWDL active (AirDrop/Handoff) \u2014 may cause periodic lag spikes"))
 
     # -- Channel utilization (CCA) --
     cca_vals: List[float] = main.get("cca_vals", [])
