@@ -15,19 +15,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import html
 import json
 import os
 import signal
 import sys
-import tempfile
 import threading
 import webbrowser
 from functools import partial
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+
+from netmon_common import (
+    to_float, latest_main_log, resolve_diag_file, resolve_main_file,
+    session_name as derive_session_name, read_csv_rows,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,74 +43,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-open", action="store_true", help="Don't open browser")
     p.add_argument("--port", type=int, default=0, help="Server port (0 = auto)")
     return p.parse_args()
-
-
-def latest_main_log(log_dir: Path) -> Optional[Path]:
-    # New format: call-STAMP/main.csv
-    candidates = list(log_dir.glob("call-*/main.csv"))
-    # Old format: call-STAMP.csv (flat files)
-    for path in log_dir.glob("call-*.csv"):
-        name = path.name
-        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv",
-                          "-udp.csv", "-diagnostics.csv")):
-            continue
-        candidates.append(path)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
-
-
-def _is_session_dir(path: Path) -> bool:
-    return path.name == "main.csv"
-
-
-def resolve_diag_file(main_file: Path) -> Path:
-    if _is_session_dir(main_file):
-        return main_file.parent / "diagnostics.csv"
-    stem = str(main_file)
-    base = stem[:-4] if stem.endswith(".csv") else stem
-    return Path(f"{base}-diagnostics.csv")
-
-
-def resolve_main_file(diag_file: Path) -> Path:
-    if diag_file.name == "diagnostics.csv":
-        return diag_file.parent / "main.csv"
-    stem = str(diag_file)
-    base = stem.replace("-diagnostics.csv", ".csv")
-    return Path(base)
-
-
-def to_float(value: str) -> Optional[float]:
-    value = value.strip()
-    if not value or value == "?":
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-def read_diag_csv(path: Path) -> List[Dict[str, str]]:
-    if not path.exists():
-        return []
-    rows = []
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    return rows
-
-
-def read_main_csv(path: Path) -> List[Dict[str, str]]:
-    if not path.exists():
-        return []
-    rows = []
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    return rows
 
 
 # Severity → visual properties
@@ -489,10 +424,14 @@ class ChartHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _read_session(self):
+        diag = read_csv_rows(self.diag_file)
+        main = (read_csv_rows(self.main_file)
+                if self.main_file and self.main_file.exists() else [])
+        return diag, main
+
     def _serve_html(self):
-        diag_rows = read_diag_csv(self.diag_file)
-        main_rows = (read_main_csv(self.main_file)
-                     if self.main_file and self.main_file.exists() else [])
+        diag_rows, main_rows = self._read_session()
         content = build_html(diag_rows, main_rows, self.session_name, live=True)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -500,9 +439,7 @@ class ChartHandler(BaseHTTPRequestHandler):
         self.wfile.write(content.encode("utf-8"))
 
     def _serve_data(self):
-        diag_rows = read_diag_csv(self.diag_file)
-        main_rows = (read_main_csv(self.main_file)
-                     if self.main_file and self.main_file.exists() else [])
+        diag_rows, main_rows = self._read_session()
         data = build_chart_data(diag_rows, main_rows, self.session_name)
         payload = json.dumps(data).encode("utf-8")
         self.send_response(200)
@@ -565,18 +502,13 @@ def main() -> int:
             return 1
         diag_file = resolve_diag_file(main_file)
 
-    if main_file and _is_session_dir(main_file):
-        session_name = main_file.parent.name
-    elif main_file:
-        session_name = main_file.stem
-    else:
-        session_name = "netmon"
+    session_name = derive_session_name(main_file)
 
-    diag_rows = read_diag_csv(diag_file) if diag_file.exists() else []
+    diag_rows = read_csv_rows(diag_file) if diag_file.exists() else []
 
     # Static export mode
     if args.output:
-        main_rows = (read_main_csv(main_file)
+        main_rows = (read_csv_rows(main_file)
                      if main_file and main_file.exists() else [])
         html_content = build_html(diag_rows, main_rows, session_name, live=False)
         out_path = Path(args.output)

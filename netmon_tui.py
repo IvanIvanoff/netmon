@@ -21,6 +21,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from netmon_common import (
+    to_float, latest_main_log, resolve_related,  # noqa: F401 — re-exported for tests
+)
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -33,22 +37,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pid-file", default="", help="Optional PID file for collector status")
     parser.add_argument("--refresh", type=float, default=1.0, help="Refresh interval in seconds")
     return parser.parse_args()
-
-
-# ---------------------------------------------------------------------------
-# Numeric helpers
-# ---------------------------------------------------------------------------
-
-def to_float(value: str) -> Optional[float]:
-    if value is None:
-        return None
-    value = value.strip()
-    if not value or value == "?":
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
 
 
 def to_int(value: str) -> int:
@@ -113,42 +101,8 @@ def calc_duration(first_ts: str, last_ts: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# File discovery
+# File discovery — imported from netmon_common
 # ---------------------------------------------------------------------------
-
-def latest_main_log(log_dir: Path) -> Optional[Path]:
-    # New format: call-STAMP/main.csv
-    candidates = list(log_dir.glob("call-*/main.csv"))
-    # Old format: call-STAMP.csv (flat files)
-    for path in log_dir.glob("call-*.csv"):
-        name = path.name
-        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv",
-                          "-udp.csv", "-diagnostics.csv")):
-            continue
-        candidates.append(path)
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
-
-
-def _is_session_dir(main_file: Path) -> bool:
-    """True if main_file lives in a per-session directory (new format)."""
-    return main_file.name == "main.csv"
-
-
-def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path, Path]:
-    if _is_session_dir(main_file):
-        d = main_file.parent
-        return (d / "traffic.csv", d / "connections.csv",
-                d / "scan.csv", d / "udp.csv",
-                d / "diagnostics.csv")
-    # Old flat format: call-STAMP.csv → call-STAMP-traffic.csv etc.
-    stem = str(main_file)
-    base = stem[:-4] if stem.endswith(".csv") else stem
-    return (Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"),
-            Path(f"{base}-scan.csv"), Path(f"{base}-udp.csv"),
-            Path(f"{base}-diagnostics.csv"))
 
 
 def collector_status(pid_file: Optional[Path]) -> Tuple[bool, Optional[int]]:
@@ -421,6 +375,24 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
     bssid_set: set = main.get("bssid_set", set())
     channel_set: set = main.get("channel_set", set())
 
+    # -- Helper for common threshold pattern --
+    def _check(vals, n, bad_th, warn_th, bad_msg, warn_msg, inverted=False):
+        """Check recent N values against bad/warn thresholds."""
+        if not vals:
+            return
+        recent = vals[-n:]
+        v = sum(recent) / len(recent)
+        if inverted:
+            if v < bad_th:
+                issues.append(("bad", bad_msg.format(v=v)))
+            elif v < warn_th:
+                issues.append(("warn", warn_msg.format(v=v)))
+        else:
+            if v > bad_th:
+                issues.append(("bad", bad_msg.format(v=v)))
+            elif v > warn_th:
+                issues.append(("warn", warn_msg.format(v=v)))
+
     # -- WiFi signal issues --
     rssi_now = to_float(latest.get("rssi_dBm", ""))
     if rssi_now is not None:
@@ -433,22 +405,16 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
     if snr_now is not None and snr_now < 20:
         issues.append(("warn", f"Low SNR: {snr_now:.0f} dB (noisy environment)"))
 
-    # -- Latency / jitter --
-    if ping_vals:
-        recent_ping = ping_vals[-5:]
-        recent_avg = sum(recent_ping) / len(recent_ping)
-        if recent_avg > 100:
-            issues.append(("bad", f"High latency: {recent_avg:.0f} ms avg (last 5)"))
-        elif recent_avg > 50:
-            issues.append(("warn", f"Elevated latency: {recent_avg:.0f} ms avg (last 5)"))
-
-    if jitter_vals:
-        recent_jitter = jitter_vals[-5:]
-        jitter_avg = sum(recent_jitter) / len(recent_jitter)
-        if jitter_avg > 30:
-            issues.append(("bad", f"High jitter: {jitter_avg:.0f} ms (bad for video calls)"))
-        elif jitter_avg > 10:
-            issues.append(("warn", f"Moderate jitter: {jitter_avg:.1f} ms"))
+    # -- Latency / jitter / DNS --
+    _check(ping_vals, 5, 100, 50,
+           "High latency: {v:.0f} ms avg (last 5)",
+           "Elevated latency: {v:.0f} ms avg (last 5)")
+    _check(jitter_vals, 5, 30, 10,
+           "High jitter: {v:.0f} ms (bad for video calls)",
+           "Moderate jitter: {v:.1f} ms")
+    _check(dns_vals, 5, 200, 80,
+           "Slow DNS: {v:.0f} ms avg",
+           "Elevated DNS latency: {v:.0f} ms")
 
     # -- Packet loss --
     if loss_vals:
@@ -462,29 +428,17 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
 
     # -- Gateway vs internet (isolate WiFi from ISP) --
     if gw_ping_vals and ping_vals:
-        gw_recent = gw_ping_vals[-5:]
-        inet_recent = ping_vals[-5:]
-        gw_avg = sum(gw_recent) / len(gw_recent)
-        inet_avg = sum(inet_recent) / len(inet_recent)
+        gw_avg = sum(gw_ping_vals[-5:]) / len(gw_ping_vals[-5:])
+        inet_avg = sum(ping_vals[-5:]) / len(ping_vals[-5:])
         if gw_avg > 20 and inet_avg > 50:
             issues.append(("bad", f"Gateway latency {gw_avg:.0f}ms -> WiFi/LAN problem"))
         elif inet_avg > gw_avg * 3 and inet_avg > 50:
             issues.append(("warn", f"ISP issue: gateway {gw_avg:.0f}ms vs internet {inet_avg:.0f}ms"))
 
-    # -- DNS --
-    if dns_vals:
-        recent_dns = dns_vals[-5:]
-        dns_avg = sum(recent_dns) / len(recent_dns)
-        if dns_avg > 200:
-            issues.append(("bad", f"Slow DNS: {dns_avg:.0f} ms avg"))
-        elif dns_avg > 80:
-            issues.append(("warn", f"Elevated DNS latency: {dns_avg:.0f} ms"))
-
     # -- TX rate drops (relative to session peak) --
     if tx_vals and len(tx_vals) >= 3:
         tx_peak = max(tx_vals)
-        recent_tx = tx_vals[-3:]
-        tx_now = sum(recent_tx) / len(recent_tx)
+        tx_now = sum(tx_vals[-3:]) / 3
         if tx_peak > 0:
             drop_pct = (tx_peak - tx_now) / tx_peak * 100
             if drop_pct >= 70:
@@ -544,18 +498,12 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
         issues.append(("warn", f"Interface errors: {int(total_ierrs)} in / {int(total_oerrs)} out"))
 
     # -- System resources --
-    if cpu_vals:
-        cpu_now = cpu_vals[-1]
-        if cpu_now > 400:
-            issues.append(("bad", f"Very high CPU: {cpu_now:.0f}% (may throttle WiFi)"))
-        elif cpu_now > 200:
-            issues.append(("warn", f"High CPU: {cpu_now:.0f}%"))
-    if mem_vals:
-        mem_now = mem_vals[-1]
-        if mem_now > 90:
-            issues.append(("bad", f"Memory pressure: {mem_now:.0f}% used"))
-        elif mem_now > 80:
-            issues.append(("warn", f"High memory: {mem_now:.0f}% used"))
+    _check(cpu_vals, 1, 400, 200,
+           "Very high CPU: {v:.0f}% (may throttle WiFi)",
+           "High CPU: {v:.0f}%")
+    _check(mem_vals, 1, 90, 80,
+           "Memory pressure: {v:.0f}% used",
+           "High memory: {v:.0f}% used")
 
     # -- AWDL active (only warn if latency spikes are present) --
     awdl = latest.get("awdl_status", "")
@@ -568,13 +516,9 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
 
     # -- Channel utilization (CCA) --
     cca_vals: List[float] = main.get("cca_vals", [])
-    if cca_vals:
-        recent_cca = cca_vals[-5:]
-        cca_avg = sum(recent_cca) / len(recent_cca)
-        if cca_avg > 70:
-            issues.append(("bad", f"High channel utilization: {cca_avg:.0f}% (congested)"))
-        elif cca_avg > 40:
-            issues.append(("warn", f"Moderate channel utilization: {cca_avg:.0f}%"))
+    _check(cca_vals, 5, 70, 40,
+           "High channel utilization: {v:.0f}% (congested)",
+           "Moderate channel utilization: {v:.0f}%")
 
     # -- WiFi congestion from scan --
     if scan_rows:

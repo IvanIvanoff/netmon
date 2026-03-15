@@ -4,14 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from netmon_chart import (
-    read_diag_csv,
-    read_main_csv,
-    build_html,
-    build_chart_data,
+from netmon_common import (
+    read_csv_rows,
     resolve_diag_file,
     resolve_main_file,
     latest_main_log,
+)
+from netmon_chart import (
+    build_html,
+    build_chart_data,
 )
 
 SAMPLE_MAIN_ROW = {
@@ -28,14 +29,14 @@ SAMPLE_DIAG = [{"timestamp": "2025-01-15 10:00:05", "severity": "warn",
 
 class TestReadDiagCsv:
     def test_reads_fixture(self, diag_csv):
-        rows = read_diag_csv(diag_csv)
+        rows = read_csv_rows(diag_csv)
         assert len(rows) == 6
         assert rows[0]["severity"] == "warn"
         assert rows[1]["severity"] == "bad"
         assert rows[2]["severity"] == "resolved"
 
     def test_missing_file(self, tmp_path):
-        rows = read_diag_csv(tmp_path / "nonexistent.csv")
+        rows = read_csv_rows(tmp_path / "nonexistent.csv")
         assert rows == []
 
 

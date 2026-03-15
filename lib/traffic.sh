@@ -12,20 +12,14 @@ _nettop_snapshot() {
 }
 
 _nettop_udp_snapshot() {
-  # UDP traffic snapshot: process.pid,bytes_in,bytes_out
   nettop -m udp -P -L 1 -n -x -J time,bytes_in,bytes_out 2>/dev/null |
     awk -F, 'NR > 1 && ($3 + 0 > 0 || $4 + 0 > 0) { print $2 "," $3 "," $4 }'
 }
 
 _nettop_conn_snapshot() {
-  # Connection-level snapshot:
-  #   process.pid|local_ip:port<->remote_ip:port,bytes_in,bytes_out,retransmits
-  # Keep full flow key so multiple sockets to the same remote do not collide.
   nettop -m tcp -L 1 -n -x 2>/dev/null | awk -F, '
     NR == 1 { next }
-    # Process summary line (interface field is empty)
     $3 == "" && $2 ~ /\.[0-9]+$/ { proc = $2; next }
-    # Connection line with traffic
     $2 ~ /<->/ && ($5 + 0 > 0 || $6 + 0 > 0) {
       flow = $2
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", flow)
@@ -62,31 +56,40 @@ build_name_map() {
   fi
 }
 
+# Shared awk function block for proc/pid extraction from nettop keys.
+# Include in awk scripts via: awk "$(cat <<'AWK_FUNCS' ... AWK_FUNCS)" ...
+_AWK_PROC_FUNCS='
+  function resolve_proc(raw, fullname,   n, p, i, pid, proc) {
+    proc = raw; pid = ""
+    n = split(raw, p, ".")
+    if (n > 1 && p[n] ~ /^[0-9]+$/) {
+      pid = p[n]; proc = p[1]
+      for (i = 2; i < n; i++) proc = proc "." p[i]
+    }
+    if (pid != "" && pid in fullname) proc = fullname[pid]
+    return proc
+  }
+  function resolve_pid(raw,   n, p) {
+    n = split(raw, p, ".")
+    if (n > 1 && p[n] ~ /^[0-9]+$/) return p[n]
+    return ""
+  }
+  function clamp(v) { return (v < 0 ? 0 : v) }
+'
+
 capture_traffic() {
-  # Compute per-interval deltas against previous snapshot, append to traffic CSV
   local ts="$1" traffic_file="$2" prev_file="$3" curr_file="$4" name_file="$5"
 
   if [[ -s "$prev_file" ]]; then
-    awk -F, -v ts="$ts" '
+    awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
       FILENAME == ARGV[1] { fullname[$1] = $2; next }
-      FILENAME == ARGV[2] { prev_in[$1]=$2; prev_out[$1]=$3; prev_dup[$1]=$4; prev_ooo[$1]=$5; prev_retx[$1]=$6; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4 FS $5 FS $6; next }
       {
-        din   = $2 - (prev_in[$1] + 0);    if (din < 0) din = 0
-        dout  = $3 - (prev_out[$1] + 0);   if (dout < 0) dout = 0
-        ddup  = $4 - (prev_dup[$1] + 0);   if (ddup < 0) ddup = 0
-        dooo  = $5 - (prev_ooo[$1] + 0);   if (dooo < 0) dooo = 0
-        dretx = $6 - (prev_retx[$1] + 0);  if (dretx < 0) dretx = 0
+        split(prev[$1], pv, FS)
+        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2])
         if (din > 0 || dout > 0) {
-          proc = $1
-          pid = ""
-          n = split(proc, p, ".")
-          if (n > 1 && p[n] ~ /^[0-9]+$/) {
-            pid = p[n]
-            proc = p[1]
-            for (i = 2; i < n; i++) proc = proc "." p[i]
-          }
-          if (pid != "" && pid in fullname) proc = fullname[pid]
-          printf "%s,%s,%s,%d,%d,%d,%d,%d\n", ts, proc, pid, din, dout, ddup, dooo, dretx
+          ddup = clamp($4 - pv[3]); dooo = clamp($5 - pv[4]); dretx = clamp($6 - pv[5])
+          printf "%s,%s,%s,%d,%d,%d,%d,%d\n", ts, resolve_proc($1, fullname), resolve_pid($1), din, dout, ddup, dooo, dretx
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$traffic_file"
@@ -101,35 +104,20 @@ capture_connections() {
   _nettop_conn_snapshot >"$curr_file"
 
   if [[ -s "$prev_file" ]]; then
-    awk -F, -v ts="$ts" '
+    awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
       FILENAME == ARGV[1] { fullname[$1] = $2; next }
-      FILENAME == ARGV[2] { prev_in[$1]=$2; prev_out[$1]=$3; prev_retx[$1]=$4; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3 FS $4; next }
       {
-        din   = $2 - (prev_in[$1] + 0);    if (din < 0) din = 0
-        dout  = $3 - (prev_out[$1] + 0);   if (dout < 0) dout = 0
-        dretx = $4 - (prev_retx[$1] + 0);  if (dretx < 0) dretx = 0
+        split(prev[$1], pv, FS)
+        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2]); dretx = clamp($4 - pv[3])
         if (din > 0 || dout > 0) {
-          split($1, kp, "|")
-          proc_raw = kp[1]
-          flow = kp[2]
+          split($1, kp, "|"); proc_raw = kp[1]; flow = kp[2]
           split(flow, lr, "<->")
           remote = (length(lr[2]) > 0 ? lr[2] : flow)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", remote)
-          pid = ""
-          n = split(proc_raw, p, ".")
-          if (n > 1 && p[n] ~ /^[0-9]+$/) {
-            pid = p[n]
-            proc = p[1]
-            for (i = 2; i < n; i++) proc = proc "." p[i]
-          } else {
-            proc = proc_raw
-          }
-          if (pid != "" && pid in fullname) proc = fullname[pid]
-          n = split(remote, rp, ":")
-          rport = rp[n]
-          rip = rp[1]
+          n = split(remote, rp, ":"); rport = rp[n]; rip = rp[1]
           for (i = 2; i < n; i++) rip = rip ":" rp[i]
-          printf "%s,%s,%s,%s,%s,%d,%d,%d\n", ts, proc, pid, rip, rport, din, dout, dretx
+          printf "%s,%s,%s,%s,%s,%d,%d,%d\n", ts, resolve_proc(proc_raw, fullname), resolve_pid(proc_raw), rip, rport, din, dout, dretx
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$conn_file"
@@ -144,21 +132,14 @@ capture_udp_traffic() {
   _nettop_udp_snapshot >"$curr_file"
 
   if [[ -s "$prev_file" ]]; then
-    awk -F, -v ts="$ts" '
+    awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
       FILENAME == ARGV[1] { fullname[$1] = $2; next }
-      FILENAME == ARGV[2] { prev_in[$1]=$2; prev_out[$1]=$3; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3; next }
       {
-        din = $2 - (prev_in[$1] + 0); if (din < 0) din = 0
-        dout = $3 - (prev_out[$1] + 0); if (dout < 0) dout = 0
+        split(prev[$1], pv, FS)
+        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2])
         if (din > 0 || dout > 0) {
-          proc = $1; pid = ""
-          n = split(proc, p, ".")
-          if (n > 1 && p[n] ~ /^[0-9]+$/) {
-            pid = p[n]; proc = p[1]
-            for (i = 2; i < n; i++) proc = proc "." p[i]
-          }
-          if (pid != "" && pid in fullname) proc = fullname[pid]
-          printf "%s,%s,%s,%d,%d\n", ts, proc, pid, din, dout
+          printf "%s,%s,%s,%d,%d\n", ts, resolve_proc($1, fullname), resolve_pid($1), din, dout
         }
       }
     ' "$name_file" "$prev_file" "$curr_file" >>"$udp_file"
