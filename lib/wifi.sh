@@ -18,10 +18,12 @@ maybe_compile_wifi_helper() {
     return 0
   fi
 
-  local tmp_binary
+  local tmp_binary tmp_src tmp_err
   tmp_binary=$(make_tmp_file "wifi_helper")
+  tmp_src="$(make_tmp_file "wifi_helper_src").swift"
+  tmp_err=$(make_tmp_file "wifi_helper_err")
 
-  if swiftc -O -o "$tmp_binary" - 2>&1 | head -5 <<'SWIFT'
+  cat > "$tmp_src" <<'SWIFT'
 import CoreWLAN
 guard let iface = CWWiFiClient.shared().interface() else { exit(1) }
 print("     agrCtlRSSI: \(iface.rssiValue())")
@@ -46,13 +48,16 @@ if let cw = ch {
 }
 print("  channelWidth: \(chWidth)")
 SWIFT
-  then
+
+  if swiftc -O -o "$tmp_binary" "$tmp_src" 2>"$tmp_err"; then
     mv "$tmp_binary" "$WIFI_HELPER"
     chmod +x "$WIFI_HELPER"
   else
+    head -5 "$tmp_err" >&2
     rm -f "$tmp_binary"
     warn "Failed to compile CoreWLAN helper; continuing without it."
   fi
+  rm -f "$tmp_src" "$tmp_err"
 }
 
 get_wifi_info() {

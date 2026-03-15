@@ -8,28 +8,21 @@ _NETMON_REPORT_LOADED=1
 
 resolve_related_logs() {
   local input="$1"
-  local main_file traffic_file conn_file kind
+  local dir main_file traffic_file conn_file kind
 
-  case "$input" in
-  *-traffic.csv)
-    main_file="${input%-traffic.csv}.csv"
-    traffic_file="$input"
-    conn_file="${input%-traffic.csv}-connections.csv"
-    kind="traffic"
-    ;;
-  *-connections.csv)
-    main_file="${input%-connections.csv}.csv"
-    traffic_file="${input%-connections.csv}-traffic.csv"
-    conn_file="$input"
-    kind="connections"
-    ;;
-  *)
-    main_file="$input"
-    traffic_file="${input%.csv}-traffic.csv"
-    conn_file="${input%.csv}-connections.csv"
-    kind="main"
-    ;;
-  esac
+  # Resolve to the session directory
+  if [[ -d "$input" ]]; then
+    dir="$input"
+  elif [[ -f "$input" ]]; then
+    dir=$(dirname "$input")
+  else
+    dir="$input"
+  fi
+
+  main_file="$dir/main.csv"
+  traffic_file="$dir/traffic.csv"
+  conn_file="$dir/connections.csv"
+  kind="main"
 
   printf "%s|%s|%s|%s\n" "$main_file" "$traffic_file" "$conn_file" "$kind"
 }
@@ -61,7 +54,7 @@ cmd_review() {
     main_available=1
   elif [[ "$requested_kind" == "main" ]]; then
     echo "Provided file is not a netmon main CSV: $requested"
-    echo "Use a main file (call-*.csv) or any related -traffic/-connections file."
+    echo "Use a session directory (call-*/), main.csv, or any CSV within a session."
     return 1
   fi
 
@@ -255,7 +248,8 @@ cmd_review() {
   fi
 
   # UDP Traffic
-  local udp_file="${main_file%.csv}-udp.csv"
+  local udp_file
+  udp_file="$(dirname "$main_file")/udp.csv"
   if [[ -f "$udp_file" ]] && [[ $(wc -l <"$udp_file") -gt 1 ]]; then
     _section "Per-Process UDP Traffic"
     awk -F, '
@@ -467,17 +461,27 @@ cmd_review() {
   echo " Raw CSV     : $sample_file"
   [[ "$requested" != "$sample_file" ]] && echo " Input CSV   : $requested"
   [[ -f "$traffic_file" ]] && echo " Traffic CSV : $traffic_file"
+  local session_dir
+  session_dir=$(dirname "$main_file")
   [[ -f "$conn_file" ]] && echo " Connect CSV : $conn_file"
-  [[ -f "${main_file%.csv}-udp.csv" ]] && echo " UDP CSV     : ${main_file%.csv}-udp.csv"
+  [[ -f "$session_dir/udp.csv" ]] && echo " UDP CSV     : $session_dir/udp.csv"
   print_rule
 }
 
 cmd_list() {
   ensure_log_dir
-  echo "Available logs:"
-  local file found=0 size mtime
+  echo "Available sessions:"
+  local file found=0 mtime samples
 
   shopt -s nullglob
+  # New format: call-STAMP/main.csv
+  for file in "$LOG_DIR"/call-*/main.csv; do
+    found=1
+    samples=$(($(wc -l <"$file") - 1))
+    mtime=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$file" 2>/dev/null || echo "unknown-time")
+    printf "  %s  (%d samples, %s)\n" "$(dirname "$file")" "$samples" "$mtime"
+  done
+  # Old format: call-STAMP.csv (flat files)
   for file in "$LOG_DIR"/call-*.csv; do
     [[ "$file" == *-traffic.csv ]] && continue
     [[ "$file" == *-connections.csv ]] && continue
@@ -485,9 +489,9 @@ cmd_list() {
     [[ "$file" == *-udp.csv ]] && continue
     [[ "$file" == *-diagnostics.csv ]] && continue
     found=1
-    size=$(wc -c <"$file" | tr -d " ")
+    samples=$(($(wc -l <"$file") - 1))
     mtime=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$file" 2>/dev/null || echo "unknown-time")
-    printf "  %s  (%s bytes, %s)\n" "$file" "$size" "$mtime"
+    printf "  %s  (%d samples, %s)\n" "$file" "$samples" "$mtime"
   done
   shopt -u nullglob
 

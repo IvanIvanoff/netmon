@@ -114,24 +114,25 @@ assert_true "start: already running msg" "$([[ "$output" == *"already running"* 
 echo "Collecting samples for ~12 seconds..."
 sleep 12
 
-# Find the log files
-main_csv=$(ls "$TEST_LOG_DIR"/call-*.csv 2>/dev/null | grep -v traffic | grep -v connections | grep -v scan | head -1)
-assert_true "main CSV exists" "$([[ -n "$main_csv" && -f "$main_csv" ]] && echo true || echo false)"
+# Find the session directory
+session_dir=$(ls -d "$TEST_LOG_DIR"/call-*/ 2>/dev/null | head -1)
+main_csv="$session_dir/main.csv"
+assert_true "main CSV exists" "$([[ -n "$session_dir" && -f "$main_csv" ]] && echo true || echo false)"
 
-if [[ -z "$main_csv" || ! -f "$main_csv" ]]; then
-  echo "FATAL: No main CSV found, cannot continue."
+if [[ -z "$session_dir" || ! -f "$main_csv" ]]; then
+  echo "FATAL: No session directory found, cannot continue."
   echo "Files in log dir:"
-  ls -la "$TEST_LOG_DIR"/ 2>/dev/null || true
+  ls -laR "$TEST_LOG_DIR"/ 2>/dev/null || true
   echo ""
   printf "$ERRORS"
   rm -f "$OUT_FILE"
   exit 1
 fi
 
-traffic_csv="${main_csv%.csv}-traffic.csv"
-conn_csv="${main_csv%.csv}-connections.csv"
-scan_csv="${main_csv%.csv}-scan.csv"
-udp_csv="${main_csv%.csv}-udp.csv"
+traffic_csv="$session_dir/traffic.csv"
+conn_csv="$session_dir/connections.csv"
+scan_csv="$session_dir/scan.csv"
+udp_csv="$session_dir/udp.csv"
 
 assert_true "traffic CSV exists" "$([[ -f "$traffic_csv" ]] && echo true || echo false)"
 assert_true "connections CSV exists" "$([[ -f "$conn_csv" ]] && echo true || echo false)"

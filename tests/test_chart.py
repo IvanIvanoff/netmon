@@ -40,23 +40,54 @@ class TestReadDiagCsv:
 
 
 class TestResolvePaths:
-    def test_resolve_diag_file(self):
+    def test_resolve_diag_file_new_format(self):
+        main = Path("/logs/call-20250115/main.csv")
+        assert resolve_diag_file(main) == Path("/logs/call-20250115/diagnostics.csv")
+
+    def test_resolve_diag_file_old_format(self):
         main = Path("/logs/call-20250115.csv")
         assert resolve_diag_file(main) == Path("/logs/call-20250115-diagnostics.csv")
 
-    def test_resolve_main_file(self):
+    def test_resolve_main_file_new_format(self):
+        diag = Path("/logs/call-20250115/diagnostics.csv")
+        assert resolve_main_file(diag) == Path("/logs/call-20250115/main.csv")
+
+    def test_resolve_main_file_old_format(self):
         diag = Path("/logs/call-20250115-diagnostics.csv")
         assert resolve_main_file(diag) == Path("/logs/call-20250115.csv")
 
 
 class TestLatestMainLog:
-    def test_filters_diagnostics_csv(self, tmp_path):
-        main = tmp_path / "call-20250115.csv"
-        diag = tmp_path / "call-20250115-diagnostics.csv"
+    def test_finds_session_dir(self, tmp_path):
+        session = tmp_path / "call-20250115"
+        session.mkdir()
+        main = session / "main.csv"
         main.write_text("timestamp\n")
-        diag.write_text("timestamp,severity,message\n")
         result = latest_main_log(tmp_path)
         assert result == main
+
+    def test_finds_old_flat_file(self, tmp_path):
+        old = tmp_path / "call-20250115.csv"
+        old.write_text("timestamp\n")
+        result = latest_main_log(tmp_path)
+        assert result == old
+
+    def test_prefers_newest(self, tmp_path):
+        import time
+        old = tmp_path / "call-20250114.csv"
+        old.write_text("timestamp\n")
+        time.sleep(0.05)
+        session = tmp_path / "call-20250115"
+        session.mkdir()
+        new = session / "main.csv"
+        new.write_text("timestamp\n")
+        result = latest_main_log(tmp_path)
+        assert result == new
+
+    def test_ignores_related_csvs(self, tmp_path):
+        (tmp_path / "call-20250115-traffic.csv").write_text("x\n")
+        (tmp_path / "call-20250115-diagnostics.csv").write_text("x\n")
+        assert latest_main_log(tmp_path) is None
 
     def test_no_logs(self, tmp_path):
         assert latest_main_log(tmp_path) is None

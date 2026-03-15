@@ -43,7 +43,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def latest_main_log(log_dir: Path) -> Optional[Path]:
-    candidates = []
+    # New format: call-STAMP/main.csv
+    candidates = list(log_dir.glob("call-*/main.csv"))
+    # Old format: call-STAMP.csv (flat files)
     for path in log_dir.glob("call-*.csv"):
         name = path.name
         if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv",
@@ -56,13 +58,21 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     return candidates[0]
 
 
+def _is_session_dir(path: Path) -> bool:
+    return path.name == "main.csv"
+
+
 def resolve_diag_file(main_file: Path) -> Path:
+    if _is_session_dir(main_file):
+        return main_file.parent / "diagnostics.csv"
     stem = str(main_file)
     base = stem[:-4] if stem.endswith(".csv") else stem
     return Path(f"{base}-diagnostics.csv")
 
 
 def resolve_main_file(diag_file: Path) -> Path:
+    if diag_file.name == "diagnostics.csv":
+        return diag_file.parent / "main.csv"
     stem = str(diag_file)
     base = stem.replace("-diagnostics.csv", ".csv")
     return Path(base)
@@ -555,18 +565,14 @@ def main() -> int:
             return 1
         diag_file = resolve_diag_file(main_file)
 
-    if not diag_file.exists():
-        print(f"No diagnostics file found: {diag_file}", file=sys.stderr)
-        print("Run a monitoring session first — diagnostics are logged "
-              "while the TUI is active.", file=sys.stderr)
-        return 1
+    if main_file and _is_session_dir(main_file):
+        session_name = main_file.parent.name
+    elif main_file:
+        session_name = main_file.stem
+    else:
+        session_name = "netmon"
 
-    session_name = main_file.stem if main_file else diag_file.stem
-
-    diag_rows = read_diag_csv(diag_file)
-    if not diag_rows:
-        print(f"Diagnostics file is empty: {diag_file}", file=sys.stderr)
-        return 1
+    diag_rows = read_diag_csv(diag_file) if diag_file.exists() else []
 
     # Static export mode
     if args.output:

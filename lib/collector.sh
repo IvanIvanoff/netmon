@@ -22,6 +22,7 @@ sample_loop() {
   echo "$CONNECTIONS_CSV_HEADER" >"$conn_file"
   echo "$SCAN_CSV_HEADER" >"$scan_file"
   echo "$UDP_CSV_HEADER" >"$udp_file"
+  echo "$DIAG_CSV_HEADER" >"$(dirname "$logfile")/diagnostics.csv"
 
   local pub_ip
   pub_ip=$(get_public_ip)

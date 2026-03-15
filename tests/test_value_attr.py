@@ -82,16 +82,19 @@ class TestSnrThresholds:
 
 
 class TestTxThresholds:
-    """TX: <80 bad, <200 warn, >=200 ok (inverted)."""
+    """TX: <20 bad, <50 warn, >=50 ok (inverted)."""
 
     def test_excellent(self):
         assert value_attr(THEME, "tx", 800.0) == "OK"
 
+    def test_ok(self):
+        assert value_attr(THEME, "tx", 54.0) == "OK"
+
     def test_warn(self):
-        assert value_attr(THEME, "tx", 150.0) == "WARN"
+        assert value_attr(THEME, "tx", 30.0) == "WARN"
 
     def test_bad(self):
-        assert value_attr(THEME, "tx", 50.0) == "BAD"
+        assert value_attr(THEME, "tx", 15.0) == "BAD"
 
 
 class TestDnsThresholds:

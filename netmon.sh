@@ -45,15 +45,18 @@ cmd_start() {
     rm -f "$PID_FILE"
   fi
 
-  local stamp logfile traffic_file conn_file scan_file udp_file
+  local stamp session_dir logfile traffic_file conn_file scan_file udp_file
   stamp=$(date +%Y%m%d-%H%M%S)
-  logfile="$LOG_DIR/call-${stamp}.csv"
-  traffic_file="$LOG_DIR/call-${stamp}-traffic.csv"
-  conn_file="$LOG_DIR/call-${stamp}-connections.csv"
-  scan_file="$LOG_DIR/call-${stamp}-scan.csv"
-  udp_file="$LOG_DIR/call-${stamp}-udp.csv"
+  session_dir="$LOG_DIR/call-${stamp}"
+  mkdir -p "$session_dir"
+  logfile="$session_dir/main.csv"
+  traffic_file="$session_dir/traffic.csv"
+  conn_file="$session_dir/connections.csv"
+  scan_file="$session_dir/scan.csv"
+  udp_file="$session_dir/udp.csv"
 
   echo "Starting network monitor..."
+  echo "  Session  : $session_dir"
   echo "  Log file : $logfile"
   echo "  Traffic  : $traffic_file"
   echo "  Connects : $conn_file"
@@ -102,13 +105,10 @@ cmd_stop() {
   local latest
   latest=$(latest_main_log)
   if [[ -n "$latest" ]]; then
-    local samples traffic conns
+    local samples session_dir
     samples=$(($(wc -l <"$latest") - 1))
-    echo "Logged $samples samples to: $latest"
-    traffic="${latest%.csv}-traffic.csv"
-    [[ -f "$traffic" ]] && echo "Traffic log    : $traffic"
-    conns="${latest%.csv}-connections.csv"
-    [[ -f "$conns" ]] && echo "Connections log: $conns"
+    session_dir=$(dirname "$latest")
+    echo "Logged $samples samples to: $session_dir/"
   fi
 }
 

@@ -117,10 +117,13 @@ def calc_duration(first_ts: str, last_ts: str) -> str:
 # ---------------------------------------------------------------------------
 
 def latest_main_log(log_dir: Path) -> Optional[Path]:
-    candidates = []
+    # New format: call-STAMP/main.csv
+    candidates = list(log_dir.glob("call-*/main.csv"))
+    # Old format: call-STAMP.csv (flat files)
     for path in log_dir.glob("call-*.csv"):
         name = path.name
-        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv", "-udp.csv", "-diagnostics.csv")):
+        if name.endswith(("-traffic.csv", "-connections.csv", "-scan.csv",
+                          "-udp.csv", "-diagnostics.csv")):
             continue
         candidates.append(path)
     if not candidates:
@@ -129,7 +132,18 @@ def latest_main_log(log_dir: Path) -> Optional[Path]:
     return candidates[0]
 
 
+def _is_session_dir(main_file: Path) -> bool:
+    """True if main_file lives in a per-session directory (new format)."""
+    return main_file.name == "main.csv"
+
+
 def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path, Path]:
+    if _is_session_dir(main_file):
+        d = main_file.parent
+        return (d / "traffic.csv", d / "connections.csv",
+                d / "scan.csv", d / "udp.csv",
+                d / "diagnostics.csv")
+    # Old flat format: call-STAMP.csv → call-STAMP-traffic.csv etc.
     stem = str(main_file)
     base = stem[:-4] if stem.endswith(".csv") else stem
     return (Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"),
@@ -466,14 +480,17 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
         elif dns_avg > 80:
             issues.append(("warn", f"Elevated DNS latency: {dns_avg:.0f} ms"))
 
-    # -- TX rate drops --
-    if tx_vals:
+    # -- TX rate drops (relative to session peak) --
+    if tx_vals and len(tx_vals) >= 3:
+        tx_peak = max(tx_vals)
         recent_tx = tx_vals[-3:]
         tx_now = sum(recent_tx) / len(recent_tx)
-        if tx_now < 50:
-            issues.append(("bad", f"Very low TX rate: {tx_now:.0f} Mbps"))
-        elif tx_now < 100:
-            issues.append(("warn", f"Low TX rate: {tx_now:.0f} Mbps"))
+        if tx_peak > 0:
+            drop_pct = (tx_peak - tx_now) / tx_peak * 100
+            if drop_pct >= 70:
+                issues.append(("bad", f"TX rate dropped {drop_pct:.0f}%: {tx_now:.0f} of {tx_peak:.0f} Mbps"))
+            elif drop_pct >= 50:
+                issues.append(("warn", f"TX rate dropped {drop_pct:.0f}%: {tx_now:.0f} of {tx_peak:.0f} Mbps"))
 
     # -- MCS index drops --
     mcs_vals: List[float] = main.get("mcs_vals", [])
@@ -690,7 +707,7 @@ def value_attr(theme: Dict[str, int], kind: str, value: Optional[float]) -> int:
         "loss":   (5, 0, False),
         "rssi":   (-72, -60, True),
         "snr":    (15, 25, True),
-        "tx":     (80, 200, True),
+        "tx":     (20, 50, True),
         "dns":    (200, 80, False),
         "gw":     (20, 5, False),
         "jitter": (30, 10, False),

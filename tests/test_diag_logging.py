@@ -93,14 +93,34 @@ class TestLogDiagnostics:
 
 
 class TestResolveRelatedDiagnostics:
-    def test_includes_diagnostics_file(self, tmp_path):
-        main = tmp_path / "call-20250115.csv"
+    def test_new_format_diagnostics(self, tmp_path):
+        session = tmp_path / "call-20250115"
+        session.mkdir()
+        main = session / "main.csv"
         result = resolve_related(main)
         assert len(result) == 5
-        assert str(result[4]).endswith("-diagnostics.csv")
+        assert result[4] == session / "diagnostics.csv"
 
-    def test_diagnostics_path_correct(self, tmp_path):
-        main = tmp_path / "call-20250115-100000.csv"
+    def test_new_format_all_files(self, tmp_path):
+        session = tmp_path / "call-20250115-100000"
+        session.mkdir()
+        main = session / "main.csv"
         result = resolve_related(main)
-        expected = tmp_path / "call-20250115-100000-diagnostics.csv"
-        assert result[4] == expected
+        assert result[0] == session / "traffic.csv"
+        assert result[1] == session / "connections.csv"
+        assert result[2] == session / "scan.csv"
+        assert result[3] == session / "udp.csv"
+        assert result[4] == session / "diagnostics.csv"
+
+    def test_old_format_diagnostics(self, tmp_path):
+        main = tmp_path / "call-20250115.csv"
+        result = resolve_related(main)
+        assert result[4] == tmp_path / "call-20250115-diagnostics.csv"
+
+    def test_old_format_all_files(self, tmp_path):
+        main = tmp_path / "call-20250115.csv"
+        result = resolve_related(main)
+        assert result[0] == tmp_path / "call-20250115-traffic.csv"
+        assert result[1] == tmp_path / "call-20250115-connections.csv"
+        assert result[2] == tmp_path / "call-20250115-scan.csv"
+        assert result[3] == tmp_path / "call-20250115-udp.csv"

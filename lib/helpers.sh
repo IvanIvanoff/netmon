@@ -68,6 +68,11 @@ make_tmp_file() {
 latest_main_log() {
   local latest="" file
   shopt -s nullglob
+  # New format: call-STAMP/main.csv
+  for file in "$LOG_DIR"/call-*/main.csv; do
+    [[ -z "$latest" || "$file" -nt "$latest" ]] && latest="$file"
+  done
+  # Old format: call-STAMP.csv (flat files)
   for file in "$LOG_DIR"/call-*.csv; do
     [[ "$file" == *-traffic.csv ]] && continue
     [[ "$file" == *-connections.csv ]] && continue

@@ -229,19 +229,32 @@ class TestDNS:
 # ---------------------------------------------------------------------------
 
 class TestTxRate:
-    def test_very_low_tx(self):
-        main = _make_main({"tx_vals": [30.0] * 10})
+    def test_severe_drop(self):
+        # Peak 800, recent 200 → 75% drop → bad
+        main = _make_main({"tx_vals": [800.0] * 5 + [200.0] * 3})
         issues = run_diagnostics(main, [])
         assert _has_severity(issues, "bad")
-        assert _has_message_containing(issues, "very low tx")
+        assert _has_message_containing(issues, "tx rate dropped")
 
-    def test_low_tx_warn(self):
-        main = _make_main({"tx_vals": [80.0] * 10})
+    def test_moderate_drop(self):
+        # Peak 800, recent 350 → ~56% drop → warn
+        main = _make_main({"tx_vals": [800.0] * 5 + [350.0] * 3})
         issues = run_diagnostics(main, [])
-        assert _has_message_containing(issues, "low tx")
+        assert _has_message_containing(issues, "tx rate dropped")
 
-    def test_good_tx(self):
+    def test_stable_rate_no_warning(self):
         main = _make_main({"tx_vals": [800.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "tx rate")
+
+    def test_low_but_stable_no_warning(self):
+        # 48 Mbps stable — typical 2.4 GHz, should NOT warn
+        main = _make_main({"tx_vals": [48.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "tx rate")
+
+    def test_needs_3_samples(self):
+        main = _make_main({"tx_vals": [800.0, 100.0]})
         issues = run_diagnostics(main, [])
         assert not _has_message_containing(issues, "tx rate")
 
@@ -618,7 +631,7 @@ class TestCombinedScenarios:
             "loss_vals": [10.0] * 10,
             "rssi_vals": [-82.0] * 10,
             "snr_vals": [3.0] * 10,
-            "tx_vals": [18.0] * 10,
+            "tx_vals": [800.0] * 5 + [18.0] * 5,
             "dns_vals": [300.0] * 10,
             "gw_ping_vals": [50.0] * 10,
             "jitter_vals": [40.0] * 10,
