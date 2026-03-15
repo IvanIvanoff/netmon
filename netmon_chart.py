@@ -122,6 +122,53 @@ def _human_bytes(n: int) -> str:
     return f"{n} B"
 
 
+# ---------------------------------------------------------------------------
+# Known port → service mappings
+# ---------------------------------------------------------------------------
+
+_PORT_MAP = {
+    22: "SSH", 53: "DNS", 80: "HTTP", 443: "HTTPS",
+    853: "DNS-over-TLS", 993: "IMAPS", 5228: "Google Push",
+    5353: "mDNS",
+}
+
+# Ranges checked first (most specific → least specific).
+_PORT_RANGES = [
+    ((19302, 19309), "Google Meet"),
+    ((8801, 8810), "Zoom"),
+    ((16384, 16399), "FaceTime/RTP"),
+    ((3478, 3481), "STUN/TURN"),
+    ((50000, 50100), "Discord Voice"),
+]
+
+
+def _port_service(port_str: str) -> str:
+    """Return known service name for a port number, or empty string."""
+    try:
+        port = int(port_str)
+    except (ValueError, TypeError):
+        return ""
+    for (lo, hi), name in _PORT_RANGES:
+        if lo <= port <= hi:
+            return name
+    return _PORT_MAP.get(port, "")
+
+
+def _port_label(port_str: str) -> str:
+    """Display label: grouped service name for ranges, :port (svc) otherwise."""
+    try:
+        port = int(port_str)
+    except (ValueError, TypeError):
+        return f":{port_str}"
+    for (lo, hi), name in _PORT_RANGES:
+        if lo <= port <= hi:
+            return name
+    svc = _PORT_MAP.get(port, "")
+    if svc:
+        return f":{port} ({svc})"
+    return f":{port}"
+
+
 def _aggregate_traffic(rows: List[Dict[str, str]], top_n: int = 10,
                        ) -> List[dict]:
     """Aggregate per-process traffic: totals + time series."""
@@ -191,6 +238,46 @@ def _aggregate_connections(rows: List[Dict[str, str]], top_n: int = 10,
         pts = series[key]
         result.append({
             "connection": key,
+            "bytes_in": total_in,
+            "bytes_out": total_out,
+            "retransmits": total_retx,
+            "human_in": _human_bytes(total_in),
+            "human_out": _human_bytes(total_out),
+            "series_ts": [p["ts"] for p in pts],
+            "series_in": [p["in"] for p in pts],
+            "series_out": [p["out"] for p in pts],
+        })
+    return result
+
+
+def _aggregate_by_port(rows: List[Dict[str, str]], top_n: int = 15,
+                       ) -> List[dict]:
+    """Aggregate connection traffic by port/service with time series."""
+    from collections import defaultdict
+    totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0])
+    series: Dict[str, List[dict]] = defaultdict(list)
+    for r in rows:
+        port = r.get("remote_port", "?")
+        label = _port_label(port)
+        b_in = int(r.get("bytes_in", 0) or 0)
+        b_out = int(r.get("bytes_out", 0) or 0)
+        retx = int(r.get("retransmits", 0) or 0)
+        totals[label][0] += b_in
+        totals[label][1] += b_out
+        totals[label][2] += retx
+        series[label].append({
+            "ts": r.get("sample_ts", ""),
+            "in": b_in, "out": b_out,
+        })
+    ranked = sorted(totals.items(), key=lambda kv: kv[1][0] + kv[1][1],
+                    reverse=True)[:top_n]
+    result = []
+    for label, (total_in, total_out, total_retx) in ranked:
+        if total_in + total_out == 0:
+            continue
+        pts = series[label]
+        result.append({
+            "port": label,
             "bytes_in": total_in,
             "bytes_out": total_out,
             "retransmits": total_retx,
@@ -309,6 +396,7 @@ def build_chart_data(diag_rows: List[Dict[str, str]],
         "tcpTraffic": _aggregate_traffic(traffic_rows or []),
         "udpTraffic": _aggregate_traffic(udp_rows or []),
         "connections": _aggregate_connections(conn_rows or []),
+        "portTraffic": _aggregate_by_port(conn_rows or []),
     }
 
 
@@ -532,7 +620,7 @@ function renderTrafficTable(containerId, title, items, nameField) {{
   if (!items || items.length === 0) return '';
   var h = '<h2>' + title + '</h2>';
   h += '<table class="traffic-table"><thead><tr>';
-  h += '<th>' + (nameField === 'connection' ? 'Connection' : 'Process') + '</th>';
+  h += '<th>' + (nameField === 'connection' ? 'Connection' : nameField === 'port' ? 'Port / Service' : 'Process') + '</th>';
   h += '<th style="text-align:right">In</th><th style="text-align:right">Out</th>';
   h += '<th style="text-align:right">Retx</th>';
   h += '<th>Traffic over time</th></tr></thead><tbody>';
@@ -650,10 +738,12 @@ function renderTraffic(data) {{
   var h = '';
   h += renderTrafficTable('tcp', 'TCP Traffic by Process', data.tcpTraffic, 'process');
   h += renderTrafficTable('udp', 'UDP Traffic by Process', data.udpTraffic, 'process');
+  h += renderTrafficTable('port', 'Traffic by Port / Service', data.portTraffic, 'port');
   h += renderTrafficTable('conn', 'Top Connections', data.connections, 'connection');
   sec.innerHTML = h;
   renderTrafficSparklines('tcp', data.tcpTraffic);
   renderTrafficSparklines('udp', data.udpTraffic);
+  renderTrafficSparklines('port', data.portTraffic);
   renderTrafficSparklines('conn', data.connections);
 }}
 

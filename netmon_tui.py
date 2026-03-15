@@ -927,6 +927,18 @@ def draw_dashboard(
            f"{int(total_ierrs)} in / {int(total_oerrs)} out", theme, err_style); r += 1
 
     # -- Processes box (TCP + UDP) --
+    # Compute session duration for rate-based retransmit thresholds
+    _session_minutes = 1.0
+    try:
+        from datetime import datetime as _dt
+        _t0 = _dt.strptime(str(main["first_ts"]), "%Y-%m-%d %H:%M:%S")
+        _t1 = _dt.strptime(str(main["last_ts"]), "%Y-%m-%d %H:%M:%S")
+        _session_minutes = max(1.0, (_t1 - _t0).total_seconds() / 60.0)
+    except (ValueError, KeyError):
+        pass
+    # Warn if retransmit rate exceeds 10/min
+    _retx_warn = int(10 * _session_minutes)
+
     proc_inner_w = max(1, proc_w - 2)
     recv_w = 9
     sent_w = 9
@@ -949,7 +961,7 @@ def draw_dashboard(
             break
         retx_str = "-" if retx == 0 else str(retx)
         line = f"{proc[:pname_w]:<{pname_w}} | {human_bytes(recv):>{recv_w}} | {human_bytes(sent):>{sent_w}} | {retx_str:>{retx_w}}"
-        row_attr = theme["warn"] if retx > 100 else theme["text"]
+        row_attr = theme["warn"] if retx > _retx_warn else theme["text"]
         box_write(stdscr, mid_y, c2_x, mid_h, proc_w, row_idx, line, row_attr)
         row_idx += 1
 
@@ -988,7 +1000,7 @@ def draw_dashboard(
             f"{proc[:cp_w]:<{cp_w}} | {remote[:crm_w]:<{crm_w}} | "
             f"{human_bytes(recv):>{cr_w}} | {human_bytes(sent):>{cs_w}} | {retx_str:>{ct_w}}"
         )
-        row_attr = theme["warn"] if retx > 100 else theme["text"]
+        row_attr = theme["warn"] if retx > _retx_warn else theme["text"]
         box_write(stdscr, mid_y, c3_x, mid_h, conn_w, i, line, row_attr)
 
     # ===== BOTTOM ROW: Diagnostics | WiFi Environment =====

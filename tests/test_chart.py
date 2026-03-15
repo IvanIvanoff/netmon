@@ -13,6 +13,9 @@ from netmon_common import (
 from netmon_chart import (
     build_html,
     build_chart_data,
+    _port_service,
+    _port_label,
+    _aggregate_by_port,
 )
 
 SAMPLE_MAIN_ROW = {
@@ -156,6 +159,108 @@ class TestBuildChartData:
         assert data["hasMetrics"] is False
 
 
+SAMPLE_CONN_ROW = {
+    "sample_ts": "2025-01-15 10:00:05", "process": "chrome", "pid": "123",
+    "remote_ip": "142.250.80.14", "remote_port": "443",
+    "bytes_in": "1000", "bytes_out": "500", "retransmits": "0",
+}
+
+
+class TestPortService:
+    def test_well_known_ports(self):
+        assert _port_service("443") == "HTTPS"
+        assert _port_service("53") == "DNS"
+        assert _port_service("80") == "HTTP"
+        assert _port_service("22") == "SSH"
+
+    def test_google_meet_range(self):
+        assert _port_service("19302") == "Google Meet"
+        assert _port_service("19305") == "Google Meet"
+        assert _port_service("19309") == "Google Meet"
+
+    def test_zoom_range(self):
+        assert _port_service("8801") == "Zoom"
+        assert _port_service("8810") == "Zoom"
+
+    def test_stun_turn(self):
+        assert _port_service("3478") == "STUN/TURN"
+        assert _port_service("3481") == "STUN/TURN"
+
+    def test_facetime_rtp(self):
+        assert _port_service("16384") == "FaceTime/RTP"
+
+    def test_unknown_port(self):
+        assert _port_service("12345") == ""
+
+    def test_invalid_input(self):
+        assert _port_service("abc") == ""
+        assert _port_service("") == ""
+
+
+class TestPortLabel:
+    def test_range_service_grouped(self):
+        assert _port_label("19302") == "Google Meet"
+        assert _port_label("8805") == "Zoom"
+
+    def test_single_port_service_labeled(self):
+        assert _port_label("443") == ":443 (HTTPS)"
+        assert _port_label("53") == ":53 (DNS)"
+
+    def test_unknown_port_bare(self):
+        assert _port_label("12345") == ":12345"
+
+    def test_invalid_input(self):
+        assert _port_label("abc") == ":abc"
+
+
+class TestAggregateByPort:
+    def test_groups_by_port(self):
+        rows = [
+            {"sample_ts": "2025-01-15 10:00:05", "remote_port": "443",
+             "bytes_in": "100", "bytes_out": "50", "retransmits": "0"},
+            {"sample_ts": "2025-01-15 10:00:10", "remote_port": "443",
+             "bytes_in": "200", "bytes_out": "100", "retransmits": "1"},
+            {"sample_ts": "2025-01-15 10:00:05", "remote_port": "19302",
+             "bytes_in": "500", "bytes_out": "300", "retransmits": "0"},
+        ]
+        result = _aggregate_by_port(rows)
+        labels = [r["port"] for r in result]
+        assert "Google Meet" in labels
+        assert ":443 (HTTPS)" in labels
+
+    def test_merges_meet_port_range(self):
+        rows = [
+            {"sample_ts": "2025-01-15 10:00:05", "remote_port": "19302",
+             "bytes_in": "100", "bytes_out": "50", "retransmits": "0"},
+            {"sample_ts": "2025-01-15 10:00:05", "remote_port": "19305",
+             "bytes_in": "200", "bytes_out": "100", "retransmits": "0"},
+        ]
+        result = _aggregate_by_port(rows)
+        assert len(result) == 1
+        assert result[0]["port"] == "Google Meet"
+        assert result[0]["bytes_in"] == 300
+        assert result[0]["bytes_out"] == 150
+
+    def test_empty_rows(self):
+        assert _aggregate_by_port([]) == []
+
+    def test_port_traffic_in_chart_data(self):
+        data = build_chart_data([], [], "test", conn_rows=[SAMPLE_CONN_ROW])
+        assert len(data["portTraffic"]) == 1
+        assert data["portTraffic"][0]["port"] == ":443 (HTTPS)"
+
+    def test_port_traffic_has_series(self):
+        rows = [
+            {"sample_ts": "2025-01-15 10:00:05", "remote_port": "19302",
+             "bytes_in": "100", "bytes_out": "50", "retransmits": "0"},
+            {"sample_ts": "2025-01-15 10:00:10", "remote_port": "19302",
+             "bytes_in": "200", "bytes_out": "100", "retransmits": "0"},
+        ]
+        result = _aggregate_by_port(rows)
+        assert len(result[0]["series_ts"]) == 2
+        assert result[0]["series_in"] == [100, 200]
+
+
 class TestBuildHtml:
     def test_contains_plotly_script(self):
         diag_rows = [{"timestamp": "2025-01-15 10:00:05", "severity": "warn",
@@ -221,3 +326,9 @@ class TestBuildHtml:
         html = build_html(SAMPLE_DIAG, [SAMPLE_MAIN_ROW], "test")
         assert "panels-container" in html
         assert "renderPanels" in html
+
+    def test_port_service_table_in_html(self):
+        html = build_html(SAMPLE_DIAG, [], "test",
+                          conn_rows=[SAMPLE_CONN_ROW])
+        assert "Port / Service" in html
+        assert "portTraffic" in html
