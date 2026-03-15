@@ -83,3 +83,30 @@ def read_csv_rows(path: Path) -> List[Dict[str, str]]:
         return []
     with open(path, newline="") as f:
         return list(csv.DictReader(f))
+
+
+# Known VPN process names (lowercase for matching).
+_VPN_PROCESSES = frozenset({
+    "nordvpnd", "nordvpn", "nordfilter", "nordlayer",
+    "expressvpnd", "expressvpn", "lightway",
+    "surfshark",
+    "wireguard-go",
+    "openvpn",
+    "vpnagentd", "acwebsecagent",  # Cisco AnyConnect
+    "tailscaled",
+    "mullvad-daemon", "mullvad-exclude",
+    "protonvpn",
+    "pangps", "globalprotect",  # Palo Alto GlobalProtect
+    "warp-svc", "cloudflarewarp",  # Cloudflare WARP
+    "nesessionmanager",  # macOS built-in VPN
+    "snxconnect",  # Check Point
+    "dsAccessService",  # Cisco Secure Client
+    "forticlient",
+})
+
+
+def tag_vpn(process_name: str) -> str:
+    """Prefix process name with [VPN] if it's a known VPN process."""
+    if process_name.lower() in _VPN_PROCESSES:
+        return f"[VPN] {process_name}"
+    return process_name

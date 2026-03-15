@@ -30,6 +30,7 @@ from typing import Dict, List, Optional
 from netmon_common import (
     to_float, latest_main_log, resolve_related, resolve_diag_file,
     resolve_main_file, session_name as derive_session_name, read_csv_rows,
+    tag_vpn,
 )
 
 
@@ -176,7 +177,7 @@ def _aggregate_traffic(rows: List[Dict[str, str]], top_n: int = 10,
     totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     series: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
-        proc = r.get("process", "?")
+        proc = tag_vpn(r.get("process", "?"))
         b_in = int(r.get("bytes_in", 0) or 0)
         b_out = int(r.get("bytes_out", 0) or 0)
         p_in = int(r.get("packets_in", 0) or 0)
@@ -222,7 +223,7 @@ def _aggregate_connections(rows: List[Dict[str, str]], top_n: int = 10,
     totals: Dict[str, List[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     series: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
-        proc = r.get("process", "?")
+        proc = tag_vpn(r.get("process", "?"))
         remote = r.get("remote_ip", "?")
         port = r.get("remote_port", "?")
         key = f"{proc} \u2192 {remote}:{port}"

@@ -9,6 +9,7 @@ from netmon_common import (
     resolve_diag_file,
     resolve_main_file,
     latest_main_log,
+    tag_vpn,
 )
 from netmon_chart import (
     build_html,
@@ -95,6 +96,28 @@ class TestLatestMainLog:
 
     def test_no_logs(self, tmp_path):
         assert latest_main_log(tmp_path) is None
+
+
+class TestTagVpn:
+    def test_known_vpn_processes(self):
+        assert tag_vpn("nordvpnd") == "[VPN] nordvpnd"
+        assert tag_vpn("NordVPN") == "[VPN] NordVPN"
+        assert tag_vpn("openvpn") == "[VPN] openvpn"
+        assert tag_vpn("wireguard-go") == "[VPN] wireguard-go"
+        assert tag_vpn("tailscaled") == "[VPN] tailscaled"
+        assert tag_vpn("vpnagentd") == "[VPN] vpnagentd"
+
+    def test_non_vpn_unchanged(self):
+        assert tag_vpn("Google Chrome") == "Google Chrome"
+        assert tag_vpn("Spotify") == "Spotify"
+        assert tag_vpn("kernel") == "kernel"
+
+    def test_case_insensitive(self):
+        assert tag_vpn("NordVPND") == "[VPN] NordVPND"
+        assert tag_vpn("OPENVPN") == "[VPN] OPENVPN"
+
+    def test_unknown(self):
+        assert tag_vpn("unknown") == "unknown"
 
 
 class TestBuildChartData:

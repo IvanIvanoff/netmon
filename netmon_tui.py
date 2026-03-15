@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from netmon_common import (
-    to_float, latest_main_log, resolve_related,  # noqa: F401 — re-exported for tests
+    to_float, latest_main_log, resolve_related, tag_vpn,  # noqa: F401 — re-exported for tests
 )
 
 
@@ -208,7 +208,7 @@ def parse_traffic_totals(path: Path) -> Dict[str, List[int]]:
         with path.open(newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                proc = row.get("process", "") or "unknown"
+                proc = tag_vpn(row.get("process", "") or "unknown")
                 totals[proc][0] += to_int(row.get("bytes_in", "0"))
                 totals[proc][1] += to_int(row.get("bytes_out", "0"))
                 totals[proc][2] += to_int(row.get("packets_in", "0"))
@@ -236,7 +236,7 @@ def parse_connection_totals(path: Path) -> Dict[Tuple[str, str], List[int]]:
         with path.open(newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                proc = row.get("process", "") or "unknown"
+                proc = tag_vpn(row.get("process", "") or "unknown")
                 remote = row.get("remote_ip", "") or "unknown"
                 key = (proc, remote)
                 totals[key][0] += to_int(row.get("bytes_in", "0"))
