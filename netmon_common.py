@@ -45,17 +45,17 @@ def _is_session_dir(main_file: Path) -> bool:
     return main_file.name == "main.csv"
 
 
-def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path, Path]:
-    """Return (traffic, connections, scan, udp, diagnostics) paths."""
+def resolve_related(main_file: Path) -> Tuple[Path, Path, Path, Path, Path, Path]:
+    """Return (traffic, connections, scan, udp, diagnostics, udp_connections) paths."""
     if _is_session_dir(main_file):
         d = main_file.parent
         return (d / "traffic.csv", d / "connections.csv",
                 d / "scan.csv", d / "udp.csv",
-                d / "diagnostics.csv")
+                d / "diagnostics.csv", d / "udp-connections.csv")
     base = str(main_file)[:-4] if str(main_file).endswith(".csv") else str(main_file)
     return (Path(f"{base}-traffic.csv"), Path(f"{base}-connections.csv"),
             Path(f"{base}-scan.csv"), Path(f"{base}-udp.csv"),
-            Path(f"{base}-diagnostics.csv"))
+            Path(f"{base}-diagnostics.csv"), Path(f"{base}-udp-connections.csv"))
 
 
 def resolve_diag_file(main_file: Path) -> Path:

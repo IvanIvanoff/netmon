@@ -98,8 +98,9 @@ class TestResolveRelatedDiagnostics:
         session.mkdir()
         main = session / "main.csv"
         result = resolve_related(main)
-        assert len(result) == 5
+        assert len(result) == 6
         assert result[4] == session / "diagnostics.csv"
+        assert result[5] == session / "udp-connections.csv"
 
     def test_new_format_all_files(self, tmp_path):
         session = tmp_path / "call-20250115-100000"
@@ -111,6 +112,7 @@ class TestResolveRelatedDiagnostics:
         assert result[2] == session / "scan.csv"
         assert result[3] == session / "udp.csv"
         assert result[4] == session / "diagnostics.csv"
+        assert result[5] == session / "udp-connections.csv"
 
     def test_old_format_diagnostics(self, tmp_path):
         main = tmp_path / "call-20250115.csv"
@@ -124,3 +126,4 @@ class TestResolveRelatedDiagnostics:
         assert result[1] == tmp_path / "call-20250115-connections.csv"
         assert result[2] == tmp_path / "call-20250115-scan.csv"
         assert result[3] == tmp_path / "call-20250115-udp.csv"
+        assert result[5] == tmp_path / "call-20250115-udp-connections.csv"

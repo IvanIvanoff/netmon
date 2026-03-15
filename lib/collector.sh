@@ -16,19 +16,24 @@ sample_loop() {
   set +e
 
   local logfile="$1" traffic_file="$2" conn_file="$3" scan_file="$4" udp_file="$5"
+  local udp_conn_file
+  udp_conn_file="$(dirname "$logfile")/udp-connections.csv"
 
   echo "$MAIN_CSV_HEADER" >"$logfile"
   echo "$TRAFFIC_CSV_HEADER" >"$traffic_file"
   echo "$CONNECTIONS_CSV_HEADER" >"$conn_file"
   echo "$SCAN_CSV_HEADER" >"$scan_file"
   echo "$UDP_CSV_HEADER" >"$udp_file"
-  echo "$DIAG_CSV_HEADER" >"$(dirname "$logfile")/diagnostics.csv"
+  echo "$UDP_CONN_CSV_HEADER" >"$udp_conn_file"
+  local diag_file
+  diag_file="$(dirname "$logfile")/diagnostics.csv"
+  echo "$DIAG_CSV_HEADER" >"$diag_file"
 
   local pub_ip
   pub_ip=$(get_public_ip)
   pub_ip="${pub_ip:-?}"
 
-  local ping_file dns_file gw_ping_file prev_traffic curr_traffic prev_conn curr_conn prev_udp curr_udp name_file ext_file
+  local ping_file dns_file gw_ping_file prev_traffic curr_traffic prev_conn curr_conn prev_udp curr_udp prev_udp_conn curr_udp_conn name_file ext_file
   ping_file=$(make_tmp_file "ping")
   dns_file=$(make_tmp_file "dns")
   gw_ping_file=$(make_tmp_file "gwping")
@@ -38,16 +43,19 @@ sample_loop() {
   curr_conn=$(make_tmp_file "ccurr")
   prev_udp=$(make_tmp_file "uprev")
   curr_udp=$(make_tmp_file "ucurr")
+  prev_udp_conn=$(make_tmp_file "ucprev")
+  curr_udp_conn=$(make_tmp_file "uccurr")
   name_file=$(make_tmp_file "names")
   ext_file=$(make_tmp_file "ext")
 
   # shellcheck disable=SC2064
-  trap "rm -f '$ping_file' '$dns_file' '$gw_ping_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$prev_udp' '$curr_udp' '$name_file' '$ext_file'" EXIT INT TERM
+  trap "rm -f '$ping_file' '$dns_file' '$gw_ping_file' '$prev_traffic' '$curr_traffic' '$prev_conn' '$curr_conn' '$prev_udp' '$curr_udp' '$prev_udp_conn' '$curr_udp_conn' '$name_file' '$ext_file'" EXIT INT TERM
 
   # Baseline snapshots (not logged; used as zero point)
   _nettop_snapshot >"$prev_traffic" || : >"$prev_traffic"
   _nettop_conn_snapshot >"$prev_conn" || : >"$prev_conn"
   _nettop_udp_snapshot >"$prev_udp" || : >"$prev_udp"
+  _nettop_udp_conn_snapshot >"$prev_udp_conn" || : >"$prev_udp_conn"
 
   # Baseline interface errors (read actual counters so first sample delta is 0)
   local prev_ierrs=0 prev_oerrs=0
@@ -61,6 +69,7 @@ sample_loop() {
     prev_oerrs="${prev_oerrs:-0}"
   fi
   local scan_counter=0
+  local prev_bssid="" prev_gateway="" prev_lip="" prev_iface=""
 
   while true; do
     local ts wifi_info parsed_wifi ssid channel rssi noise tx_rate
@@ -114,6 +123,7 @@ sample_loop() {
     capture_traffic "$ts" "$traffic_file" "$prev_traffic" "$curr_traffic" "$name_file" || true
     capture_connections "$ts" "$conn_file" "$prev_conn" "$curr_conn" "$name_file" || true
     capture_udp_traffic "$ts" "$udp_file" "$prev_udp" "$curr_udp" "$name_file" || true
+    capture_udp_connections "$ts" "$udp_conn_file" "$prev_udp_conn" "$curr_udp_conn" "$name_file" || true
 
     # System metrics (fast, no background needed)
     cpu_usage=$(get_cpu_usage)
@@ -201,6 +211,24 @@ sample_loop() {
       "$(sanitize_csv_field "$mem_pressure")" \
       "$(sanitize_csv_field "$awdl_status")" \
       "$(sanitize_csv_field "$cca_pct")" >>"$logfile"
+
+    # -- Change detection: roaming and network changes --
+    if [[ -n "$prev_bssid" && "$prev_bssid" != "?" && "${bssid:-?}" != "?" && "${bssid:-?}" != "$prev_bssid" ]]; then
+      printf "%s,%s,%s\n" "$ts" "warn" "AP roaming: BSSID changed from $prev_bssid to $bssid" >>"$diag_file"
+    fi
+    if [[ -n "$prev_gateway" && "$prev_gateway" != "?" && "$gateway_ip" != "?" && "$gateway_ip" != "$prev_gateway" ]]; then
+      printf "%s,%s,%s\n" "$ts" "warn" "Gateway changed: $prev_gateway -> $gateway_ip" >>"$diag_file"
+    fi
+    if [[ -n "$prev_lip" && "$prev_lip" != "?" && "$lip" != "?" && "$lip" != "$prev_lip" ]]; then
+      printf "%s,%s,%s\n" "$ts" "warn" "Local IP changed: $prev_lip -> $lip" >>"$diag_file"
+    fi
+    if [[ -n "$prev_iface" && "$prev_iface" != "unknown" && "$iface" != "unknown" && "$iface" != "$prev_iface" ]]; then
+      printf "%s,%s,%s\n" "$ts" "bad" "Interface changed: $prev_iface -> $iface" >>"$diag_file"
+    fi
+    prev_bssid="${bssid:-?}"
+    prev_gateway="$gateway_ip"
+    prev_lip="$lip"
+    prev_iface="$iface"
 
     sleep "$INTERVAL"
   done

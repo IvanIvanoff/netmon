@@ -147,6 +147,9 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
         "bssid_set": set(),
         "channel_set": set(),
         "band_set": set(),
+        "gateway_set": set(),
+        "interface_set": set(),
+        "local_ip_set": set(),
     }
 
     if not path.exists():
@@ -194,6 +197,15 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
                 band_val = row.get("channel_band", "")
                 if band_val and band_val != "?":
                     result["band_set"].add(band_val)
+                gw = row.get("gateway_ip", "")
+                if gw and gw != "?":
+                    result["gateway_set"].add(gw)
+                iface = row.get("interface", "")
+                if iface and iface != "unknown":
+                    result["interface_set"].add(iface)
+                lip = row.get("local_ip", "")
+                if lip and lip != "?":
+                    result["local_ip_set"].add(lip)
     except Exception:
         return result
 
@@ -514,6 +526,17 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
     if len(channel_set) > 1:
         issues.append(("warn", f"Channel changes: {', '.join(sorted(channel_set))}"))
 
+    # -- Network changes --
+    gateway_set: set = main.get("gateway_set", set())
+    if len(gateway_set) > 1:
+        issues.append(("warn", f"Gateway changed: {', '.join(sorted(gateway_set))}"))
+    interface_set: set = main.get("interface_set", set())
+    if len(interface_set) > 1:
+        issues.append(("bad", f"Interface changed: {', '.join(sorted(interface_set))}"))
+    local_ip_set: set = main.get("local_ip_set", set())
+    if len(local_ip_set) > 1:
+        issues.append(("warn", f"Local IP changed: {', '.join(sorted(local_ip_set))}"))
+
     # -- Interface errors --
     total_ierrs = sum(ierrs_vals) if ierrs_vals else 0
     total_oerrs = sum(oerrs_vals) if oerrs_vals else 0
@@ -749,7 +772,7 @@ def draw_dashboard(
     conn_baseline: Dict[Tuple[str, str], List[int]],
     udp_baseline: Optional[Dict[str, List[int]]] = None,
 ) -> List[Tuple[str, str]]:
-    traffic_file, conn_file, scan_file, udp_file, _diag_file = resolve_related(main_file)
+    traffic_file, conn_file, scan_file, udp_file, _diag_file, _udp_conn = resolve_related(main_file)
     main = parse_main_csv(main_file)
     traffic = top_traffic_rows(
         subtract_traffic_totals(parse_traffic_totals(traffic_file), traffic_baseline)
@@ -1155,7 +1178,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
 
     assert main_file is not None
 
-    traffic_file, conn_file, _scan_file, udp_file, diag_file = resolve_related(main_file)
+    traffic_file, conn_file, _scan_file, udp_file, diag_file, _udp_conn = resolve_related(main_file)
     traffic_baseline = parse_traffic_totals(traffic_file)
     conn_baseline = parse_connection_totals(conn_file)
     udp_baseline = parse_udp_totals(udp_file)
@@ -1181,7 +1204,7 @@ def run_tui(stdscr: curses.window, args: argparse.Namespace) -> int:
             latest = latest_main_log(log_dir)
             if latest is not None:
                 main_file = latest
-                traffic_file, conn_file, _scan_file, udp_file, diag_file = resolve_related(main_file)
+                traffic_file, conn_file, _scan_file, udp_file, diag_file, _udp_conn = resolve_related(main_file)
                 traffic_baseline = parse_traffic_totals(traffic_file)
                 conn_baseline = parse_connection_totals(conn_file)
                 udp_baseline = parse_udp_totals(udp_file)

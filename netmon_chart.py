@@ -312,6 +312,26 @@ def _aggregate_by_port(rows: List[Dict[str, str]], top_n: int = 15,
     return result
 
 
+def _aggregate_throughput(tcp_rows: List[Dict[str, str]],
+                         udp_rows: List[Dict[str, str]],
+                         ) -> tuple:
+    """Aggregate total throughput per timestamp. Returns (ts, kbps_in, kbps_out)."""
+    from collections import defaultdict
+    buckets: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
+    for r in (tcp_rows or []) + (udp_rows or []):
+        ts = r.get("sample_ts", "")
+        if not ts:
+            continue
+        buckets[ts][0] += int(r.get("bytes_in", 0) or 0)
+        buckets[ts][1] += int(r.get("bytes_out", 0) or 0)
+    if not buckets:
+        return [], [], []
+    timestamps = sorted(buckets.keys())
+    kb_in = [buckets[t][0] / 1024 for t in timestamps]
+    kb_out = [buckets[t][1] / 1024 for t in timestamps]
+    return timestamps, kb_in, kb_out
+
+
 def build_chart_data(diag_rows: List[Dict[str, str]],
                      main_rows: List[Dict[str, str]],
                      session_name: str,
@@ -409,6 +429,14 @@ def build_chart_data(diag_rows: List[Dict[str, str]],
             _make_line_trace(ts, ex("cpu_usage"), "CPU", "%", "#e74c3c"),
             _make_line_trace(ts, ex("cca_pct"), "CCA", "%", "#9b59b6"),
         ], height=170, ytitle="%"))
+
+    # Throughput panel (from traffic data, independent of main_rows)
+    tp_ts, tp_in, tp_out = _aggregate_throughput(traffic_rows or [], udp_rows or [])
+    if tp_ts:
+        panels.append(_panel("Throughput", [
+            _make_line_trace(tp_ts, tp_in, "In", "KB/s", "#3498db", fill="tozeroy"),
+            _make_line_trace(tp_ts, tp_out, "Out", "KB/s", "#2ecc71"),
+        ], height=200, ytitle="KB/s"))
 
     return {
         "diagTraces": diag_traces,
@@ -913,9 +941,9 @@ def main() -> int:
 
     # Resolve related session files
     if main_file:
-        traffic_file, conn_file, _scan, udp_file, _ = resolve_related(main_file)
+        traffic_file, conn_file, _scan, udp_file, _, udp_conn_file = resolve_related(main_file)
     else:
-        traffic_file = conn_file = udp_file = Path("/dev/null")
+        traffic_file = conn_file = udp_file = udp_conn_file = Path("/dev/null")
 
     diag_rows = read_csv_rows(diag_file) if diag_file.exists() else []
 

@@ -284,6 +284,50 @@ class TestAggregateByPort:
         assert result[0]["series_in"] == [100, 200]
 
 
+SAMPLE_TRAFFIC_ROWS = [
+    {"sample_ts": "2025-01-15 10:00:05", "process": "chrome", "pid": "1",
+     "bytes_in": "10240", "bytes_out": "5120", "packets_in": "10",
+     "packets_out": "5", "rx_dupe": "0", "rx_ooo": "0", "retransmits": "0"},
+    {"sample_ts": "2025-01-15 10:00:05", "process": "slack", "pid": "2",
+     "bytes_in": "2048", "bytes_out": "1024", "packets_in": "2",
+     "packets_out": "1", "rx_dupe": "0", "rx_ooo": "0", "retransmits": "0"},
+    {"sample_ts": "2025-01-15 10:00:07", "process": "chrome", "pid": "1",
+     "bytes_in": "20480", "bytes_out": "10240", "packets_in": "20",
+     "packets_out": "10", "rx_dupe": "0", "rx_ooo": "0", "retransmits": "0"},
+]
+
+
+class TestThroughputPanel:
+    def test_throughput_panel_present(self):
+        data = build_chart_data([], [], "test",
+                                traffic_rows=SAMPLE_TRAFFIC_ROWS)
+        titles = [p["layout"]["title"]["text"] for p in data["panels"]]
+        assert "Throughput" in titles
+
+    def test_throughput_has_in_out_traces(self):
+        data = build_chart_data([], [], "test",
+                                traffic_rows=SAMPLE_TRAFFIC_ROWS)
+        tp = [p for p in data["panels"]
+              if p["layout"]["title"]["text"] == "Throughput"][0]
+        names = [t["name"] for t in tp["traces"]]
+        assert "In" in names
+        assert "Out" in names
+
+    def test_throughput_sums_across_processes(self):
+        data = build_chart_data([], [], "test",
+                                traffic_rows=SAMPLE_TRAFFIC_ROWS)
+        tp = [p for p in data["panels"]
+              if p["layout"]["title"]["text"] == "Throughput"][0]
+        in_trace = [t for t in tp["traces"] if t["name"] == "In"][0]
+        # First timestamp: chrome 10240 + slack 2048 = 12288 bytes = 12 KB
+        assert abs(in_trace["y"][0] - 12288 / 1024) < 0.01
+
+    def test_no_throughput_without_traffic(self):
+        data = build_chart_data([], [], "test")
+        titles = [p["layout"]["title"]["text"] for p in data["panels"]]
+        assert "Throughput" not in titles
+
+
 class TestBuildHtml:
     def test_contains_plotly_script(self):
         diag_rows = [{"timestamp": "2025-01-15 10:00:05", "severity": "warn",

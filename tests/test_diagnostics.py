@@ -39,6 +39,9 @@ def _make_main(overrides=None):
         "if_oerrs_vals": [0.0] * 10,
         "bssid_set": {"aa:bb:cc:dd:ee:ff"},
         "channel_set": {"36"},
+        "gateway_set": {"192.168.1.1"},
+        "interface_set": {"en0"},
+        "local_ip_set": {"192.168.1.100"},
     }
     if overrides:
         for k, v in overrides.items():
@@ -690,3 +693,31 @@ class TestCombinedScenarios:
         ]
         issues = run_diagnostics(main, scan)
         assert _has_message_containing(issues, "sharing channel")
+
+
+class TestNetworkChanges:
+    def test_gateway_change(self):
+        main = _make_main({"gateway_set": {"192.168.1.1", "192.168.2.1"}})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "Gateway changed")
+
+    def test_interface_change(self):
+        main = _make_main({"interface_set": {"en0", "en1"}})
+        issues = run_diagnostics(main, [])
+        msgs = _messages(issues)
+        assert any("Interface changed" in m for m in msgs)
+        sevs = [s for s, m in issues if "Interface changed" in m]
+        assert "bad" in sevs
+
+    def test_local_ip_change(self):
+        main = _make_main({"local_ip_set": {"192.168.1.100", "10.0.0.5"}})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "Local IP changed")
+
+    def test_stable_network_no_warning(self):
+        main = _make_main()
+        issues = run_diagnostics(main, [])
+        msgs = _messages(issues)
+        assert not any("Gateway" in m for m in msgs)
+        assert not any("Interface changed" in m for m in msgs)
+        assert not any("Local IP" in m for m in msgs)

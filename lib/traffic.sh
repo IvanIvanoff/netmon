@@ -128,6 +128,46 @@ capture_connections() {
   cp "$curr_file" "$prev_file"
 }
 
+_nettop_udp_conn_snapshot() {
+  nettop -m udp -L 1 -n -x -J time,bytes_in,bytes_out 2>/dev/null | awk -F, '
+    NR == 1 { next }
+    $2 !~ /<->/ && $2 ~ /\.[0-9]+$/ { proc = $2; next }
+    $2 ~ /<->/ && $2 !~ /\*:\*$/ && ($3 + 0 > 0 || $4 + 0 > 0) {
+      flow = $2
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", flow)
+      print proc "|" flow "," $3 "," $4
+    }
+  '
+}
+
+capture_udp_connections() {
+  local ts="$1" udp_conn_file="$2" prev_file="$3" curr_file="$4" name_file="$5"
+
+  _nettop_udp_conn_snapshot >"$curr_file"
+
+  if [[ -s "$prev_file" ]]; then
+    awk -F, -v ts="$ts" "$_AWK_PROC_FUNCS"'
+      FILENAME == ARGV[1] { fullname[$1] = $2; next }
+      FILENAME == ARGV[2] { prev[$1] = $2 FS $3; next }
+      {
+        split(prev[$1], pv, FS)
+        din = clamp($2 - pv[1]); dout = clamp($3 - pv[2])
+        if (din > 0 || dout > 0) {
+          split($1, kp, "|"); proc_raw = kp[1]; flow = kp[2]
+          split(flow, lr, "<->")
+          remote = (length(lr[2]) > 0 ? lr[2] : flow)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", remote)
+          n = split(remote, rp, ":"); rport = rp[n]; rip = rp[1]
+          for (i = 2; i < n; i++) rip = rip ":" rp[i]
+          printf "%s,%s,%s,%s,%s,%d,%d\n", ts, resolve_proc(proc_raw, fullname), resolve_pid(proc_raw), rip, rport, din, dout
+        }
+      }
+    ' "$name_file" "$prev_file" "$curr_file" >>"$udp_conn_file"
+  fi
+
+  cp "$curr_file" "$prev_file"
+}
+
 capture_udp_traffic() {
   local ts="$1" udp_file="$2" prev_file="$3" curr_file="$4" name_file="$5"
 
