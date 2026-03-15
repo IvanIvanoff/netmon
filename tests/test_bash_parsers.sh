@@ -2,8 +2,8 @@
 #
 # test_bash_parsers.sh
 #
-# Tests for bash parser functions in netmon.sh.
-# Sources the functions and feeds them canned input.
+# Tests for bash parser functions in netmon lib/ modules.
+# Sources the library files directly and feeds them canned input.
 #
 # Usage: bash tests/test_bash_parsers.sh
 # Exit code 0 = all pass, non-zero = failures.
@@ -11,7 +11,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NETMON="$SCRIPT_DIR/../netmon.sh"
+LIB_DIR="$SCRIPT_DIR/../lib"
 
 PASS=0
 FAIL=0
@@ -39,20 +39,13 @@ assert_contains() {
   fi
 }
 
-# -- source functions from netmon.sh without running it ---------------------
-# We need to extract just the functions. We'll source up to the main case block.
+# -- source library modules -------------------------------------------------
 
-# Create a temp file that sources netmon.sh but overrides the main block
-TMPFILE=$(mktemp)
-trap "rm -f $TMPFILE" EXIT
-
-# Extract everything before "case" at the end
-awk '/^case "\$\{1:-help\}"/{exit} {print}' "$NETMON" > "$TMPFILE"
-
-# Disable the os check and set +e
-sed -i '' 's/set -euo pipefail/set +euo pipefail/' "$TMPFILE" 2>/dev/null || true
-
-source "$TMPFILE"
+set +e  # tests need to run even if individual commands fail
+source "$LIB_DIR/config.sh"
+source "$LIB_DIR/helpers.sh"
+source "$LIB_DIR/wifi.sh"
+source "$LIB_DIR/measure.sh"
 
 # ===================================================================
 # parse_ping tests
