@@ -437,6 +437,62 @@ class TestRoaming:
 
 
 # ---------------------------------------------------------------------------
+# AWDL status
+# ---------------------------------------------------------------------------
+
+class TestAWDL:
+    def test_awdl_active_warns(self):
+        main = _make_main({"latest": {
+            "rssi_dBm": "-45", "snr_dB": "50",
+            "channel": "36", "channel_band": "5",
+            "awdl_status": "active",
+        }})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "awdl")
+
+    def test_awdl_inactive_no_warning(self):
+        main = _make_main({"latest": {
+            "rssi_dBm": "-45", "snr_dB": "50",
+            "channel": "36", "channel_band": "5",
+            "awdl_status": "inactive",
+        }})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "awdl")
+
+    def test_awdl_unknown_no_warning(self):
+        main = _make_main()  # default has no awdl_status
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "awdl")
+
+
+# ---------------------------------------------------------------------------
+# CCA (channel utilization)
+# ---------------------------------------------------------------------------
+
+class TestCCA:
+    def test_high_cca_bad(self):
+        main = _make_main({"cca_vals": [75.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert _has_severity(issues, "bad")
+        assert _has_message_containing(issues, "channel utilization")
+
+    def test_moderate_cca_warn(self):
+        main = _make_main({"cca_vals": [50.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert _has_message_containing(issues, "channel utilization")
+
+    def test_low_cca_no_warning(self):
+        main = _make_main({"cca_vals": [15.0] * 10})
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "channel utilization")
+
+    def test_no_cca_data(self):
+        main = _make_main()  # default has no cca_vals
+        issues = run_diagnostics(main, [])
+        assert not _has_message_containing(issues, "channel utilization")
+
+
+# ---------------------------------------------------------------------------
 # Interface errors
 # ---------------------------------------------------------------------------
 

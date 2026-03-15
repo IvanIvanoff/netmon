@@ -174,6 +174,7 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
         "if_ierrs_vals": [],
         "if_oerrs_vals": [],
         "mcs_vals": [],
+        "cca_vals": [],
         "bssid_set": set(),
         "channel_set": set(),
         "band_set": set(),
@@ -209,6 +210,7 @@ def parse_main_csv(path: Path) -> Dict[str, object]:
                     ("if_ierrs_vals", "if_ierrs"),
                     ("if_oerrs_vals", "if_oerrs"),
                     ("mcs_vals", "mcs"),
+                    ("cca_vals", "cca_pct"),
                 ]:
                     v = to_float(row.get(field, ""))
                     if v is not None:
@@ -536,6 +538,21 @@ def run_diagnostics(main: Dict[str, object], scan_rows: List[Dict[str, str]]) ->
             issues.append(("bad", f"Memory pressure: {mem_now:.0f}% used"))
         elif mem_now > 80:
             issues.append(("warn", f"High memory: {mem_now:.0f}% used"))
+
+    # -- AWDL active --
+    awdl = latest.get("awdl_status", "")
+    if awdl == "active":
+        issues.append(("warn", "AWDL active (AirDrop/Handoff) \u2014 may cause periodic lag"))
+
+    # -- Channel utilization (CCA) --
+    cca_vals: List[float] = main.get("cca_vals", [])
+    if cca_vals:
+        recent_cca = cca_vals[-5:]
+        cca_avg = sum(recent_cca) / len(recent_cca)
+        if cca_avg > 70:
+            issues.append(("bad", f"High channel utilization: {cca_avg:.0f}% (congested)"))
+        elif cca_avg > 40:
+            issues.append(("warn", f"Moderate channel utilization: {cca_avg:.0f}%"))
 
     # -- WiFi congestion from scan --
     if scan_rows:

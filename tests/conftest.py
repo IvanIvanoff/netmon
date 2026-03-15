@@ -70,6 +70,7 @@ def header_only_csv(tmp_path):
         "timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,"
         "interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,"
         "ping_avg_ms,ping_max_ms,dns_ms,gateway_ip,gw_ping_ms,jitter_ms,"
-        "bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,mem_pressure\n"
+        "bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,"
+        "mem_pressure,awdl_status,cca_pct\n"
     )
     return f

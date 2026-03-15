@@ -176,3 +176,18 @@ run_wifi_scan() {
     }
   ' >>"$scan_file"
 }
+
+get_cca_percent() {
+  # Get CCA (Clear Channel Assessment) percentage from wdutil info.
+  # Requires sudo; uses sudo -n (non-interactive) to avoid password prompts.
+  # Returns a number (e.g. "12") or "?" if unavailable.
+  local output
+  output=$(sudo -n wdutil info 2>/dev/null || true)
+  if [[ -n "$output" ]]; then
+    local cca
+    cca=$(echo "$output" | awk '/CCA/ { for(i=1;i<=NF;i++) if($i ~ /^[0-9]+%?$/) { sub(/%/,"",$i); print $i; exit } }')
+    echo "${cca:-?}"
+  else
+    echo "?"
+  fi
+}

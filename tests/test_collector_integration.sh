@@ -161,7 +161,7 @@ actual_header=$(head -1 "$main_csv")
 assert_eq "main CSV: correct header" "$EXPECTED_HEADER" "$actual_header"
 
 expected_cols=$(echo "$EXPECTED_HEADER" | awk -F, '{print NF}')
-assert_eq "main CSV: header has 27 columns" "27" "$expected_cols"
+assert_eq "main CSV: header has 29 columns" "29" "$expected_cols"
 
 # Check every data row has correct column count
 line_num=0
@@ -178,7 +178,7 @@ while IFS= read -r line; do
     fi
   fi
 done < "$main_csv"
-assert_eq "main CSV: all rows have 27 columns" "0" "$col_errors"
+assert_eq "main CSV: all rows have 29 columns" "0" "$col_errors"
 
 data_lines=$((line_num - 1))
 assert_gt "main CSV: has samples" 2 "$data_lines"

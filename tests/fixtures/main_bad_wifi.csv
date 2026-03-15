@@ -1,6 +1,6 @@
-timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms,gateway_ip,gw_ping_ms,jitter_ms,bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,mem_pressure
-2026-03-12 14:00:00,MyNetwork,6,-78,-85,7,36,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,80.1,120.5,250.0,350,192.168.1.1,45.0,38.5,aa:bb:cc:dd:ee:ff,2,2.4,20,5,3,450,92
-2026-03-12 14:00:02,MyNetwork,6,-80,-85,5,24,en0,192.168.1.100,1.2.3.4,8.8.8.8,15.0,95.0,150.3,300.0,400,192.168.1.1,52.0,42.0,aa:bb:cc:dd:ee:ff,1,2.4,20,8,4,480,93
-2026-03-12 14:00:04,MyNetwork,6,-82,-85,3,18,en0,192.168.1.100,1.2.3.4,8.8.8.8,20.0,110.0,180.0,350.0,500,192.168.1.1,60.0,55.0,aa:bb:cc:dd:ee:ff,0,2.4,20,12,7,500,95
-2026-03-12 14:00:06,MyNetwork,6,-79,-85,6,30,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,85.0,130.0,270.0,380,192.168.1.1,48.0,40.0,bb:cc:dd:ee:ff:00,2,2.4,20,6,2,460,91
-2026-03-12 14:00:08,MyNetwork,6,-81,-85,4,22,en0,192.168.1.100,1.2.3.4,8.8.8.8,15.0,100.0,160.0,320.0,450,192.168.1.1,55.0,48.0,bb:cc:dd:ee:ff:00,1,2.4,20,10,5,490,94
+timestamp,ssid,channel,rssi_dBm,noise_dBm,snr_dB,tx_rate_Mbps,interface,local_ip,public_ip,ping_target,loss_%,ping_min_ms,ping_avg_ms,ping_max_ms,dns_ms,gateway_ip,gw_ping_ms,jitter_ms,bssid,mcs,channel_band,channel_width,if_ierrs,if_oerrs,cpu_usage,mem_pressure,awdl_status,cca_pct
+2026-03-12 14:00:00,MyNetwork,6,-78,-85,7,36,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,80.1,120.5,250.0,350,192.168.1.1,45.0,38.5,aa:bb:cc:dd:ee:ff,2,2.4,20,5,3,450,92,active,75
+2026-03-12 14:00:02,MyNetwork,6,-80,-85,5,24,en0,192.168.1.100,1.2.3.4,8.8.8.8,15.0,95.0,150.3,300.0,400,192.168.1.1,52.0,42.0,aa:bb:cc:dd:ee:ff,1,2.4,20,8,4,480,93,active,80
+2026-03-12 14:00:04,MyNetwork,6,-82,-85,3,18,en0,192.168.1.100,1.2.3.4,8.8.8.8,20.0,110.0,180.0,350.0,500,192.168.1.1,60.0,55.0,aa:bb:cc:dd:ee:ff,0,2.4,20,12,7,500,95,active,85
+2026-03-12 14:00:06,MyNetwork,6,-79,-85,6,30,en0,192.168.1.100,1.2.3.4,8.8.8.8,10.0,85.0,130.0,270.0,380,192.168.1.1,48.0,40.0,bb:cc:dd:ee:ff:00,2,2.4,20,6,2,460,91,active,78
+2026-03-12 14:00:08,MyNetwork,6,-81,-85,4,22,en0,192.168.1.100,1.2.3.4,8.8.8.8,15.0,100.0,160.0,320.0,450,192.168.1.1,55.0,48.0,bb:cc:dd:ee:ff:00,1,2.4,20,10,5,490,94,active,82

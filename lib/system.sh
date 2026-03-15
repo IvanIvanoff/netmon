@@ -27,6 +27,14 @@ get_mem_pressure() {
   '
 }
 
+get_awdl_status() {
+  # Check if AWDL (AirDrop/Handoff) interface is active.
+  # Returns "active", "inactive", or "unknown".
+  local status
+  status=$(ifconfig awdl0 2>/dev/null | awk '/status:/ { print $2; exit }')
+  echo "${status:-unknown}"
+}
+
 get_interface_errors() {
   local iface="$1"
   [[ -n "$iface" ]] || { echo "0|0"; return 0; }

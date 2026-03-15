@@ -119,6 +119,10 @@ sample_loop() {
     cpu_usage="${cpu_usage:-?}"
     mem_pressure=$(get_mem_pressure)
     mem_pressure="${mem_pressure:-?}"
+    local awdl_status
+    awdl_status=$(get_awdl_status)
+    local cca_pct
+    cca_pct=$(get_cca_percent)
 
     # Interface errors (delta since last sample)
     local err_data
@@ -166,7 +170,7 @@ sample_loop() {
       run_wifi_scan "$scan_file" "$ts" "$ext_file" &
     fi
 
-    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
+    printf "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n" \
       "$(sanitize_csv_field "$ts")" \
       "$(sanitize_csv_field "$ssid")" \
       "$(sanitize_csv_field "$channel")" \
@@ -193,7 +197,9 @@ sample_loop() {
       "$(sanitize_csv_field "$if_ierrs")" \
       "$(sanitize_csv_field "$if_oerrs")" \
       "$(sanitize_csv_field "$cpu_usage")" \
-      "$(sanitize_csv_field "$mem_pressure")" >>"$logfile"
+      "$(sanitize_csv_field "$mem_pressure")" \
+      "$(sanitize_csv_field "$awdl_status")" \
+      "$(sanitize_csv_field "$cca_pct")" >>"$logfile"
 
     sleep "$INTERVAL"
   done

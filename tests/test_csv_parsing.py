@@ -383,6 +383,6 @@ class TestCsvIntegrity:
     def test_udp(self, udp_csv):
         self._check_column_consistency(udp_csv)
 
-    def test_main_has_27_columns(self, good_csv):
+    def test_main_has_29_columns(self, good_csv):
         header = good_csv.read_text().split("\n")[0]
-        assert len(header.split(",")) == 27
+        assert len(header.split(",")) == 29
